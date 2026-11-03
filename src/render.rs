@@ -298,6 +298,7 @@ impl App {
         self.paint_search();
         self.paint_bar();
         self.paint_tooltip();
+        self.paint_preview();
         self.paint_toast();
         self.frame_us.push_back(t0.elapsed().as_micros() as u64);
         if self.frame_us.len() > 120 {

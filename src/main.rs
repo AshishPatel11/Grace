@@ -6,11 +6,13 @@ mod compose;
 mod composebox;
 mod config;
 mod gfx;
+mod images;
 mod input;
 mod ipc;
 mod layout;
 mod links;
 mod pane;
+mod preview;
 mod procmon;
 mod render;
 mod theme;
@@ -233,6 +235,7 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             with_app(|a| {
                 a.ui.tracking = false;
                 a.ui.mouse = (-1.0, -1.0);
+                a.ui.preview = None;
                 a.invalidate();
             });
             Some(0)

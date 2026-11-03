@@ -33,6 +33,12 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   - Ctrl+Shift+I hides the box for that tab (keys go straight to Claude again).
 - **Voice typing**: click the mic in the box, or press Win+H. This is Windows' own voice typing;
   the words land in the box. Check them, then press Enter.
+- **Picture previews on hover.** Point the mouse at `[Image #3]` anywhere in a Claude tab (old
+  messages or the one you are writing) and the picture pops up. The same works for any image file
+  path in the output (`.png .jpg .jpeg .gif .bmp .webp .ico .tif`). Claude keeps pasted pictures inside
+  the chat log; PulseTerm reads them from there. A picture you pasted but did not send yet is not in
+  the log, so PulseTerm keeps its own copy from the clipboard when you paste (Ctrl+V or ClaudeSnap).
+  Paths with spaces in them are not detected yet.
 - **Select text with a normal drag**, even inside Claude's full-screen view. A click without
   dragging still goes to Claude. Double-click = word, triple-click = line. Ctrl+C copies.
 - **Tabs and split panes.** Drag tabs to reorder. Drag the line between panes to resize.

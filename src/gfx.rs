@@ -72,6 +72,15 @@ pub struct Gfx {
     seg_cache: RefCell<(HashMap<(Vec<u16>, u8), IDWriteTextLayout>, HashMap<(Vec<u16>, u8), IDWriteTextLayout>)>,
     /// Symbols and emoji drawn once into small pictures (colour glyphs are slow to draw every frame).
     bmp_cache: RefCell<(HashMap<BmpKey, Pic>, HashMap<BmpKey, Pic>)>,
+    /// Picture previews as GPU bitmaps: key -> (bitmap, original width, height). None = could not load.
+    pics: RefCell<HashMap<String, Option<(ID2D1Bitmap, u32, u32)>>>,
+    wic: RefCell<Option<windows::Win32::Graphics::Imaging::IWICImagingFactory>>,
+}
+
+/// Where a preview picture comes from.
+pub enum PicSource {
+    Bytes(Vec<u8>),
+    File(String),
 }
 
 type BmpKey = (Vec<u16>, u8, u32);
@@ -119,6 +128,8 @@ impl Gfx {
                 coverage: RefCell::new(HashMap::new()),
                 seg_cache: RefCell::new(Default::default()),
                 bmp_cache: RefCell::new(Default::default()),
+                pics: RefCell::new(HashMap::new()),
+                wic: RefCell::new(None),
             };
             g.rebuild_fonts()?;
             Ok(g)
@@ -291,6 +302,7 @@ impl Gfx {
 
     pub fn drop_target(&mut self) {
         *self.bmp_cache.borrow_mut() = Default::default();
+        self.pics.borrow_mut().clear();
         self.rt = None;
         self.brush = None;
     }
@@ -439,6 +451,88 @@ impl Gfx {
         let bottom = cy + h / 2.0;
         self.line(cx, y + r, cx, bottom - th / 2.0, th, c);
         self.line(cx - bw * 0.7, bottom - th / 2.0, cx + bw * 0.7, bottom - th / 2.0, th, c);
+    }
+
+    fn wic(&self) -> Option<windows::Win32::Graphics::Imaging::IWICImagingFactory> {
+        use windows::Win32::Graphics::Imaging::{IWICImagingFactory, CLSID_WICImagingFactory};
+        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+        if let Some(f) = self.wic.borrow().as_ref() {
+            return Some(f.clone());
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            *self.wic.borrow_mut() = Some(f.clone());
+            Some(f)
+        }
+    }
+
+    /// A picture for a preview, made once and kept. `load` is only called the first time.
+    /// The picture is shrunk to at most `max` pixels on its long side (saves GPU memory).
+    pub fn picture(&self, key: &str, max: u32, load: impl FnOnce() -> Option<PicSource>) -> Option<(ID2D1Bitmap, u32, u32)> {
+        if let Some(v) = self.pics.borrow().get(key) {
+            return v.clone();
+        }
+        let made = load().and_then(|src| self.decode(src, max));
+        // Only keep successes: a chat picture that is not in the log yet may appear a moment later.
+        if made.is_some() {
+            let mut m = self.pics.borrow_mut();
+            if m.len() > 64 {
+                m.clear();
+            }
+            m.insert(key.to_string(), made.clone());
+        }
+        made
+    }
+
+    fn decode(&self, src: PicSource, max: u32) -> Option<(ID2D1Bitmap, u32, u32)> {
+        use windows::core::Interface;
+        use windows::Win32::Graphics::Imaging::*;
+        let rt = self.rt.as_ref()?;
+        let wic = self.wic()?;
+        unsafe {
+            // The bytes must live until the bitmap is made: the decoder reads them lazily.
+            let bytes;
+            let dec = match src {
+                PicSource::Bytes(b) => {
+                    bytes = b;
+                    let s = wic.CreateStream().ok()?;
+                    s.InitializeFromMemory(&bytes).ok()?;
+                    wic.CreateDecoderFromStream(&s, std::ptr::null(), WICDecodeMetadataCacheOnDemand).ok()?
+                }
+                PicSource::File(p) => wic
+                    .CreateDecoderFromFilename(&HSTRING::from(p.as_str()), None, windows::Win32::Foundation::GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+                    .ok()?,
+            };
+            let frame = dec.GetFrame(0).ok()?;
+            let (mut w, mut h) = (0u32, 0u32);
+            frame.GetSize(&mut w, &mut h).ok()?;
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let scale = (max as f32 / w.max(h) as f32).min(1.0);
+            let source: IWICBitmapSource = if scale < 1.0 {
+                let sw = ((w as f32 * scale).round() as u32).max(1);
+                let sh = ((h as f32 * scale).round() as u32).max(1);
+                let sc = wic.CreateBitmapScaler().ok()?;
+                sc.Initialize(&frame, sw, sh, WICBitmapInterpolationModeFant).ok()?;
+                sc.cast().ok()?
+            } else {
+                frame.cast().ok()?
+            };
+            let conv = wic.CreateFormatConverter().ok()?;
+            conv.Initialize(&source, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None::<&IWICPalette>, 0.0, WICBitmapPaletteTypeMedianCut)
+                .ok()?;
+            let bmp = rt.CreateBitmapFromWicBitmap(&conv, None).ok()?;
+            Some((bmp, w, h))
+        }
+    }
+
+    /// Draw a picture stretched into `r` (smooth scaling).
+    pub fn draw_picture(&self, b: &ID2D1Bitmap, r: Rect) {
+        if let Some(rt) = &self.rt {
+            unsafe { rt.DrawBitmap(b, Some(&d2r(r)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None) };
+        }
     }
 
     pub fn clip(&self, r: Rect) {

@@ -100,6 +100,8 @@ pub struct Ui {
     pub tracking: bool,
     /// Typing boxes in the active tab.
     pub boxes: Vec<crate::composebox::BoxHit>,
+    /// The picture under the mouse, shown as a preview.
+    pub preview: Option<crate::preview::Preview>,
 }
 
 pub enum Deferred {
@@ -149,6 +151,8 @@ pub struct App {
     pub frame_us: std::collections::VecDeque<u64>,
     /// Since last `list`: lock wait, copy, draw (microseconds), rows shaped.
     pub perf: (u64, u64, u64, u64),
+    /// Where the pictures of each chat are in its log (for previews).
+    pub chat_images: HashMap<String, crate::images::ChatImages>,
 }
 
 fn key(vk: u16) -> bool {
@@ -186,6 +190,7 @@ impl App {
             toast: None,
             frame_us: Default::default(),
             perf: (0, 0, 0, 0),
+            chat_images: HashMap::new(),
         })
     }
 
@@ -1105,6 +1110,9 @@ impl App {
                 let image = j.get("image").and_then(|v| v.as_bool()).unwrap_or(false);
                 let submit = j.get("submit").and_then(|v| v.as_bool()).unwrap_or(false);
                 let tx = live.tx.clone();
+                if image {
+                    self.note_pasted_image(pid);
+                }
                 if j.get("focus").and_then(|v| v.as_bool()).unwrap_or(true) {
                     self.activate(ti);
                 }
@@ -1144,6 +1152,13 @@ impl App {
                 json!({"ok": true})
             }
             "box" => self.box_state(),
+            // Move the mouse to a point (tests), and say which picture preview it shows.
+            "hover" => {
+                let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                self.on_mouse_move(f("x"), f("y"));
+                self.invalidate();
+                json!({"ok": true, "preview": self.ui.preview.as_ref().map(|p| p.title.clone())})
+            }
             "boxhit" => {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 self.box_probe(f("x"), f("y"))
@@ -1519,6 +1534,7 @@ impl App {
             _ => {
                 if win::clipboard_has_image() {
                     // Claude Code reads pictures from the clipboard on Alt+V.
+                    self.note_pasted_image(id);
                     self.write_focused(b"\x1bv".to_vec());
                 }
             }
@@ -1890,7 +1906,7 @@ impl App {
         self.ui.panes.iter().find(|(_, r)| r.contains(x, y)).copied()
     }
 
-    fn grid_point(&self, id: u64, r: Rect, x: f32, y: f32) -> Option<(Point, Side)> {
+    pub fn grid_point(&self, id: u64, r: Rect, x: f32, y: f32) -> Option<(Point, Side)> {
         let p = self.panes.get(&id)?;
         let l = p.live.as_ref()?;
         let (ox, oy) = self.text_origin(r);
@@ -2196,7 +2212,8 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
             Drag::None => {}
         }
-        // Hover: links (with Ctrl held), tabs.
+        // Hover: picture previews, links (with Ctrl held), tabs.
+        self.ui.preview = self.preview_at(x, y);
         let old = self.ui.link.take();
         if key(VK_CONTROL) {
             if let Some((id, r)) = self.pane_at(x, y) {

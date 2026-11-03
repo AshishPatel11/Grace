@@ -259,6 +259,7 @@ impl App {
             }
             _ => {
                 if win::clipboard_has_image() {
+                    self.note_pasted_image(id);
                     self.write_focused(b"\x1bv".to_vec());
                 }
             }

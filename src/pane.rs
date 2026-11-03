@@ -291,6 +291,8 @@ pub struct Pane {
     pub compose: crate::compose::Compose,
     /// The box text measured for drawing and clicks: (text version, width, layout).
     pub compose_layout: Option<(u64, u32, windows::Win32::Graphics::DirectWrite::IDWriteTextLayout)>,
+    /// Pictures pasted into Claude but not sent yet: Claude's number -> file bytes (for previews).
+    pub pending_images: std::collections::HashMap<u32, Vec<u8>>,
 }
 
 impl Pane {
@@ -320,6 +322,7 @@ impl Pane {
             idle_since: None,
             compose: Default::default(),
             compose_layout: None,
+            pending_images: Default::default(),
         }
     }
 
