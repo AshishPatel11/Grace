@@ -138,7 +138,7 @@ fn key_input(vk: u16, up: bool) -> INPUT {
 impl App {
     /// Should this pane show a typing box?
     pub fn box_wanted(&self, id: u64) -> bool {
-        self.cfg.input_box && self.panes.get(&id).is_some_and(|p| p.dormant.is_none() && !p.compose.hidden && p.is_claude())
+        self.panes.get(&id).is_some_and(|p| p.dormant.is_none() && (self.cfg.input_box != p.compose.toggled) && p.is_claude())
     }
 
     fn box_hit(&self, id: u64) -> Option<BoxHit> {
@@ -198,7 +198,7 @@ impl App {
     /// Re-check which panes need a box (Claude started or ended, a question appeared).
     pub fn box_check(&mut self) {
         let ids: Vec<u64> = self.panes.keys().copied().collect();
-        if ids.iter().any(|id| self.box_wanted(*id) != self.panes[id].compose.shown) {
+        if ids.iter().any(|id| self.box_wanted(*id) != self.panes[id].compose.shown || self.toolbar_wanted(*id) != self.panes[id].compose.bar) {
             self.relayout();
             self.invalidate();
         }
@@ -210,11 +210,17 @@ impl App {
             if !p.is_claude() {
                 return;
             }
-            p.compose.hidden = !p.compose.hidden;
+            p.compose.toggled = !p.compose.toggled;
             p.compose.passthrough = false;
-            let msg = if p.compose.hidden { "Typing box hidden: keys go straight to Claude. Ctrl+Shift+I brings it back." } else { "Typing box on." };
-            self.show_toast(msg.into());
         }
+        let open = self.box_wanted(id);
+        let msg = if open {
+            "Rich input open: edit like in Word, Enter sends. Ctrl+Shift+I closes it."
+        } else {
+            "Rich input closed: you type straight into Claude again."
+        };
+        self.show_toast(msg.into());
+        self.guess_clear();
         self.relayout();
         self.invalidate();
     }
@@ -638,7 +644,9 @@ impl App {
             "selection": c.selection(),
             "lines": c.shown_lines,
             "passthrough": c.passthrough,
-            "hidden": c.hidden,
+            "toggled": c.toggled,
+            "guesses": p.predict.guesses.len(),
+            "guess_cursor": p.predict.cursor,
             "box": self.box_hit(id).map(|b| [b.rect.x, b.rect.y, b.rect.w, b.rect.h]),
             "mic": self.box_hit(id).map(|b| [b.mic.x, b.mic.y, b.mic.w, b.mic.h]),
         })

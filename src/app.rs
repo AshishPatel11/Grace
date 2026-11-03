@@ -102,11 +102,23 @@ pub struct Ui {
     pub boxes: Vec<crate::composebox::BoxHit>,
     /// The picture under the mouse, shown as a preview.
     pub preview: Option<crate::preview::Preview>,
+    /// Toolbars (mic, Rich input) under Claude tabs in the active tab.
+    pub tools: Vec<crate::toolbar::ToolHit>,
+    /// The strip at the right of a Claude pane where thumbnails go.
+    pub gutters: Vec<(u64, Rect)>,
+    /// Thumbnails drawn in the last frame (click one to open it big).
+    pub thumbs: Vec<(Rect, crate::preview::Preview)>,
+    /// A picture opened big, over everything. Esc or a click closes it.
+    pub modal: Option<crate::preview::Preview>,
+    /// The recent folders shown in the last folder menu (menu id 200 + index).
+    pub folder_menu: Vec<String>,
 }
 
 pub enum Deferred {
     Menu { items: Vec<(u32, String)>, x: i32, y: i32, ctx: MenuCtx },
     Confirm { text: String, then: Confirmed },
+    /// Windows' folder picker, then Claude opens in the chosen folder.
+    PickFolder { start: Option<String> },
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +126,8 @@ pub enum MenuCtx {
     Tab(usize),
     Pane(u64),
     Profiles,
+    /// The folder button under a Claude pane.
+    Folder(u64),
 }
 
 pub enum Confirmed {
@@ -153,6 +167,8 @@ pub struct App {
     pub perf: (u64, u64, u64, u64),
     /// Where the pictures of each chat are in its log (for previews).
     pub chat_images: HashMap<String, crate::images::ChatImages>,
+    /// Thumbnails that could not be loaded, and when we last tried (retry after a while).
+    pub thumb_miss: HashMap<String, Instant>,
 }
 
 fn key(vk: u16) -> bool {
@@ -191,6 +207,7 @@ impl App {
             frame_us: Default::default(),
             perf: (0, 0, 0, 0),
             chat_images: HashMap::new(),
+            thumb_miss: HashMap::new(),
         })
     }
 
@@ -377,9 +394,11 @@ impl App {
     }
 
     pub fn new_tab(&mut self, profile: &str, cwd: Option<String>) {
+        // A folder asked for by name always wins (Duplicate tab, "Open Claude in folder").
+        let asked = cwd.is_some();
         let cwd = cwd.or_else(|| self.focused_pane().and_then(|p| p.cwd.clone()));
         let prof = self.cfg.profile(profile);
-        let cwd = if prof.cwd.is_some() && profile != self.focused_pane().map(|p| p.profile.clone()).unwrap_or_default() {
+        let cwd = if !asked && prof.cwd.is_some() && profile != self.focused_pane().map(|p| p.profile.clone()).unwrap_or_default() {
             prof.cwd.clone()
         } else {
             cwd.or(prof.cwd.clone())
@@ -704,11 +723,24 @@ impl App {
         for (ti, (rects, divs)) in all.into_iter().enumerate() {
             let mut term_rects = Vec::new();
             let mut boxes = Vec::new();
+            let mut tools = Vec::new();
+            let mut gutters = Vec::new();
             for (id, r) in rects {
-                // A Claude pane gets the typing box at its bottom; the terminal gets the rest.
+                // A Claude pane gets, from the bottom up: the toolbar, the typing box (when
+                // open), and the terminal. Thumbnails get a strip at the terminal's right.
                 let mut tr = r;
+                let bar = self.toolbar_wanted(id);
+                if bar {
+                    let t = self.toolbar_geometry(id, r);
+                    tr = Rect::new(r.x, r.y, r.w, (t.rect.y - r.y).max(ch + 2.0 * py));
+                    tools.push(t);
+                }
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.compose.bar = bar;
+                }
                 if self.box_wanted(id) {
-                    let (b, lines) = self.box_geometry(id, r);
+                    let area = tr;
+                    let (b, lines) = self.box_geometry(id, area);
                     tr = Rect::new(r.x, r.y, r.w, (b.rect.y - r.y).max(ch + 2.0 * py));
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.compose.shown = true;
@@ -717,6 +749,13 @@ impl App {
                     boxes.push(b);
                 } else if let Some(p) = self.panes.get_mut(&id) {
                     p.compose.shown = false;
+                }
+                // Thumbnail strip: only for Claude, and only when the pane is wide enough
+                // that losing a few columns does not hurt.
+                let gw = self.thumb_gutter_w();
+                if bar && self.cfg.thumbnails && tr.w - gw > 90.0 * cw {
+                    gutters.push((id, Rect::new(tr.right() - gw, tr.y, gw, tr.h)));
+                    tr = Rect::new(tr.x, tr.y, tr.w - gw, tr.h);
                 }
                 if let Some(p) = self.panes.get_mut(&id) {
                     let cols = (((tr.w - 2.0 * px) / cw).floor() as usize).max(2);
@@ -736,6 +775,8 @@ impl App {
                 self.ui.panes = term_rects;
                 self.ui.dividers = divs;
                 self.ui.boxes = boxes;
+                self.ui.tools = tools;
+                self.ui.gutters = gutters;
             }
         }
         self.layout_bar();
@@ -1152,6 +1193,21 @@ impl App {
                 json!({"ok": true})
             }
             "box" => self.box_state(),
+            // Open Claude in a folder, as the folder menu does (for tests and scripts).
+            "open_dir" => {
+                let dir = j.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                self.open_claude_in(&dir);
+                json!({"ok": true, "tabs": self.tabs.len()})
+            }
+            // Thumbnails on screen, the open picture, and the toolbar (for tests).
+            "thumbs" => json!({
+                "ok": true,
+                "thumbs": self.ui.thumbs.iter().map(|(r, p)| json!({"rect": [r.x, r.y, r.w, r.h], "title": p.title})).collect::<Vec<_>>(),
+                "modal": self.ui.modal.as_ref().map(|p| p.title.clone()),
+                "gutters": self.ui.gutters.iter().map(|(_, r)| [r.x, r.y, r.w, r.h]).collect::<Vec<_>>(),
+                "tools": self.ui.tools.iter().map(|t| json!({"mic": [t.mic.x, t.mic.y, t.mic.w, t.mic.h], "rich": [t.rich.x, t.rich.y, t.rich.w, t.rich.h],
+                    "folder": [t.folder.x, t.folder.y, t.folder.w, t.folder.h], "folder_path": self.pane_folder(t.id)})).collect::<Vec<_>>(),
+            }),
             // Move the mouse to a point (tests), and say which picture preview it shows.
             "hover" => {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -1221,7 +1277,11 @@ impl App {
                     let s: String = (0..t.columns()).map(|c| row[Column(c)].c).collect();
                     lines.push(s.trim_end().to_string());
                 }
-                json!({"ok": true, "cols": t.columns(), "lines": lines, "mode": format!("{:?}", t.mode())})
+                let c = t.grid().cursor.point;
+                let cell = &g[c.line][c.column];
+                json!({"ok": true, "cols": t.columns(), "lines": lines, "mode": format!("{:?}", t.mode()),
+                       "cursor": [c.line.0, c.column.0], "cursor_cell": format!("{:?} {:?}", cell.c, cell.flags),
+                       "cursor_style": format!("{:?}", t.cursor_style())})
             }
             _ => json!({"ok": false, "error": format!("unknown cmd '{cmd}'")}),
         }
@@ -1280,6 +1340,11 @@ impl App {
                 self.invalidate();
             }
             return false;
+        }
+        // A picture opened big: any key closes it (and does nothing else).
+        // (A key we use is not turned into a typed letter, so nothing else reaches Claude.)
+        if self.close_modal() {
+            return true;
         }
 
         // Typing in a tab name.
@@ -1341,6 +1406,7 @@ impl App {
         if ctrl && shift && !alt {
             match vk {
                 0x49 => self.box_toggle(), // I
+                0x4F => self.pick_folder_for_claude(), // O
                 0x54 => {
                     let p = self.cfg.default_profile.clone();
                     self.new_tab(&p, None)
@@ -1464,6 +1530,11 @@ impl App {
             return true;
         }
         if let Some(bytes) = special(vk, shift, ctrl && !altgr, alt && !altgr, self.app_cursor()) {
+            if vk == VK_BACK && !ctrl && !alt {
+                self.guess_backspace();
+            } else {
+                self.guess_clear();
+            }
             self.write_focused(bytes);
             return true;
         }
@@ -1503,6 +1574,11 @@ impl App {
         if self.box_char(&s, sys) {
             return;
         }
+        if sys {
+            self.guess_clear();
+        } else {
+            self.guess_char(&s);
+        }
         let mut bytes = Vec::new();
         if sys {
             bytes.push(0x1b);
@@ -1524,6 +1600,7 @@ impl App {
     }
 
     pub fn paste(&mut self) {
+        self.guess_clear();
         if let Some(id) = self.box_takes_keys() {
             self.box_paste(id);
             return;
@@ -1697,6 +1774,8 @@ impl App {
         let r = self.ui.menu;
         let mut items: Vec<(u32, String)> = self.cfg.profiles.iter().enumerate().map(|(i, p)| (i as u32 + 1, p.name.clone())).collect();
         items.push((0, String::new()));
+        items.extend(self.folder_items_for_new_tab());
+        items.push((0, String::new()));
         items.push((100, "Bring in chats open in other windows (asleep)".into()));
         let (x, y) = self.to_screen(r.x, r.bottom());
         self.pending.push(Deferred::Menu { items, x, y, ctx: MenuCtx::Profiles });
@@ -1715,7 +1794,16 @@ impl App {
             return;
         }
         match ctx {
+            MenuCtx::Folder(id) => self.folder_command(id, cmd),
             MenuCtx::Profiles => {
+                if cmd == 101 {
+                    self.pick_folder_for_claude();
+                    return;
+                }
+                if let Some(d) = self.recent_from_menu(cmd) {
+                    self.open_claude_in(&d);
+                    return;
+                }
                 if cmd == 100 {
                     let n = self.import_chats();
                     if n == 0 {
@@ -1943,6 +2031,11 @@ impl App {
 
     pub fn on_mouse_down(&mut self, x: f32, y: f32, button: u8) {
         self.ui.mouse = (x, y);
+        // A picture opened big: a click anywhere closes it.
+        if self.close_modal() {
+            return;
+        }
+        self.guess_clear();
         if let Some((idx, _)) = &self.ui.rename {
             let idx = *idx;
             if !self.ui.tabs.get(idx).is_some_and(|t| t.rect.contains(x, y)) {
@@ -1988,6 +2081,15 @@ impl App {
         };
         if self.box_mouse_down(x, y, button, key(VK_SHIFT), count) {
             return;
+        }
+        if button == 0 && self.toolbar_mouse_down(x, y) {
+            return;
+        }
+        if button == 0 {
+            if let Some(pv) = self.thumb_at(x, y) {
+                self.open_modal(pv);
+                return;
+            }
         }
         let Some((id, r)) = self.pane_at(x, y) else { return };
         self.focus_pane(id);
@@ -2351,8 +2453,17 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         if self.ui.link.is_some() && key(VK_CONTROL) {
             return 2;
         }
+        if self.ui.modal.is_some() {
+            return 0;
+        }
         if let Some(b) = self.box_at(x, y) {
             return if b.mic.contains(x, y) { 2 } else { 1 };
+        }
+        if let Some(t) = self.toolbar_at(x, y) {
+            return if t.mic.contains(x, y) || t.rich.contains(x, y) || t.folder.contains(x, y) { 2 } else { 0 };
+        }
+        if self.thumb_at(x, y).is_some() {
+            return 2;
         }
         if let Some((id, r)) = self.pane_at(x, y) {
             if self.panes.get(&id).is_some_and(|p| p.dormant.is_some()) {

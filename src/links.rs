@@ -82,6 +82,37 @@ fn file_url_to_path(u: &str) -> String {
     out.replace('/', "\\")
 }
 
+/// Image file paths in one screen row that exist on disk (full paths, or paths relative
+/// to `cwd`). Used for thumbnails.
+pub fn image_paths_in(text: &str, cwd: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut full_spans: Vec<(usize, usize)> = Vec::new();
+    for (i, re) in res().iter().enumerate().skip(1) {
+        for m in re.find_iter(text) {
+            // A relative match inside a full path is the same path: skip it.
+            if i == 2 && full_spans.iter().any(|(s, e)| m.start() < *e && m.end() > *s) {
+                continue;
+            }
+            let s = trim_end(m.as_str());
+            let (path, _, _) = split_line_col(s);
+            if !crate::images::is_image_path(&path) {
+                continue;
+            }
+            let full = if i == 2 {
+                let Some(base) = cwd else { continue };
+                Path::new(base).join(path.replace('/', "\\")).to_string_lossy().to_string()
+            } else {
+                full_spans.push((m.start(), m.end()));
+                path
+            };
+            if !out.contains(&full) && Path::new(&full).is_file() {
+                out.push(full);
+            }
+        }
+    }
+    out
+}
+
 pub fn find_at<T>(term: &Term<T>, at: Point, cwd: Option<&str>) -> Option<Link> {
     let grid = term.grid();
     let cols = grid.columns();

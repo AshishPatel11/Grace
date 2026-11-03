@@ -28,8 +28,11 @@ pub struct Compose {
     pub scroll: f32,
     /// Keep the caret's x when moving up/down through short lines.
     pub goal_x: Option<f32>,
-    /// Hidden with Ctrl+Shift+I: keys go straight to Claude again.
-    pub hidden: bool,
+    /// Ctrl+Shift+I or the "Rich input" button flipped the box for this tab
+    /// (open when the setting says closed, closed when it says open).
+    pub toggled: bool,
+    /// Was the toolbar under this tab on screen at the last layout.
+    pub bar: bool,
     /// A "/" command is being typed straight into Claude (so its own menu works).
     pub passthrough: bool,
     /// Characters typed in that "/" command (Backspace back to 0 ends it).

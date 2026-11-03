@@ -20,25 +20,40 @@ about once a second just to show the git branch. PulseTerm only draws when somet
 
 ## What it does
 
-- **Typing box under every Claude tab** (like Warp's). You type in PulseTerm's own box, so letters
-  appear at once (about 2 ms to draw), even when Claude or the PC is slow. Enter sends it to Claude.
-  It edits like Word: click to put the cursor, drag / double-click / triple-click to select,
-  Shift+arrows, Ctrl+arrows (word by word), Ctrl+Backspace, Ctrl+A, Ctrl+C / X / V, Ctrl+Z / Ctrl+Y,
-  Home / End, Shift+Enter for a new line. Ctrl+Up / Ctrl+Down bring back messages you sent from the box.
-  - When the box is empty, Enter, arrows, Tab and Backspace go to Claude, so Claude's own menus work.
-  - Esc, Shift+Tab, PgUp/PgDn and Alt+keys (Alt+V = paste a picture) always go to Claude.
-  - Typing `/` in an empty box sends it straight to Claude, so Claude's command list shows.
-    Enter runs the command; Esc cancels it and clears it from Claude's prompt.
-  - While Claude asks you something (a permission, a choice), every key goes to Claude.
-  - Ctrl+Shift+I hides the box for that tab (keys go straight to Claude again).
-- **Voice typing**: click the mic in the box, or press Win+H. This is Windows' own voice typing;
-  the words land in the box. Check them, then press Enter.
-- **Picture previews on hover.** Point the mouse at `[Image #3]` anywhere in a Claude tab (old
-  messages or the one you are writing) and the picture pops up. The same works for any image file
-  path in the output (`.png .jpg .jpeg .gif .bmp .webp .ico .tif`). Claude keeps pasted pictures inside
-  the chat log; PulseTerm reads them from there. A picture you pasted but did not send yet is not in
-  the log, so PulseTerm keeps its own copy from the clipboard when you paste (Ctrl+V or ClaudeSnap).
-  Paths with spaces in them are not detected yet.
+- **Instant typing in Claude's own input line.** In a long chat Claude sometimes stalls before it
+  draws a typed letter (measured on a 93 MB chat: usually about 30 ms, but up to 671 ms). PulseTerm
+  draws each letter at the cursor right away, and Claude's own drawing replaces it a moment later
+  (same letter, same place, so you see no change). It only guesses plain letters, space and Backspace
+  at the end of your text. Enter, arrows, Tab, Ctrl keys, paste and clicks show Claude's real screen
+  at once. Tested by pausing Claude: "hello world" (with two Backspaces) showed while Claude was
+  frozen, and Claude's text matched exactly afterwards.
+- **Toolbar under every Claude tab** (like Warp's):
+  - **Mic**: opens Windows voice typing (the same as Win+H). The words go into Claude's input line.
+  - **Rich input** (Ctrl+Shift+I): opens a Word-like typing box for that tab. Off by default.
+    It edits like Word: click to put the cursor, drag / double-click / triple-click to select,
+    Shift+arrows, Ctrl+arrows (word by word), Ctrl+Backspace, Ctrl+A, Ctrl+C / X / V, Ctrl+Z / Ctrl+Y,
+    Home / End, Shift+Enter for a new line, Enter sends. Ctrl+Up / Ctrl+Down bring back messages
+    you sent from the box.
+    - When the box is empty, Enter, arrows, Tab and Backspace go to Claude, so Claude's own menus work.
+    - Esc, Shift+Tab, PgUp/PgDn and Alt+keys (Alt+V = paste a picture) always go to Claude.
+    - Typing `/` in an empty box sends it straight to Claude, so Claude's command list shows.
+      Enter runs the command; Esc cancels it and clears it from Claude's prompt.
+    - While Claude asks you something (a permission, a choice), every key goes to Claude.
+- **Open Claude in another folder.** Claude cannot move to another folder once it runs (its chat
+  belongs to the folder it started in), so this opens a NEW tab with a fresh Claude there; the chat
+  you were in keeps running. Three ways: the folder button on the toolbar (it shows the tab's folder;
+  its menu also has your recent folders, "Show this folder in Explorer" and "Copy this folder's
+  path"), the ⌄ menu next to +, or Ctrl+Shift+O (Windows' folder picker). The first time in a new
+  folder Claude asks whether you trust it. Recent folders are kept in
+  `%APPDATA%\PulseTermecent_folders.json`.
+- **Picture thumbnails.** Every line in a Claude tab that shows `[Image #3]` or an image file path
+  gets a small picture at the right edge (about 3 text lines tall). Click it to see the picture big
+  over the window; Esc or a click closes it. Pointing the mouse at the `[Image #3]` text itself also
+  pops up a preview. Works for `.png .jpg .jpeg .gif .bmp .webp .ico .tif`. Claude keeps pasted
+  pictures inside the chat log; PulseTerm reads them from there. A picture you pasted but did not
+  send yet is not in the log, so PulseTerm keeps its own copy from the clipboard when you paste
+  (Ctrl+V or ClaudeSnap). The thumbnail strip takes about 10 columns, and only in panes wider than
+  about 100 columns. Paths with spaces, and paths split over two lines, are not detected yet.
 - **Select text with a normal drag**, even inside Claude's full-screen view. A click without
   dragging still goes to Claude. Double-click = word, triple-click = line. Ctrl+C copies.
 - **Tabs and split panes.** Drag tabs to reorder. Drag the line between panes to resize.
@@ -77,6 +92,8 @@ about once a second just to show the git branch. PulseTerm only draws when somet
 | Keys | What |
 |---|---|
 | Ctrl+Shift+T | New tab (default profile = Claude) |
+| Ctrl+Shift+O | Open Claude in another folder (new tab) |
+| Ctrl+Shift+I | Open / close Rich input for this tab |
 | Ctrl+Shift+Space, or the ⌄ next to + | New tab with another profile (PowerShell, Git Bash, cmd) |
 | Ctrl+Shift+W | Close pane (or tab) |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
@@ -139,7 +156,10 @@ right-click a tab > Reload settings.
 - `ram_warn_mb` (default 1024), `editor` (default `code`), `copy_on_select`, `cursor_blink`,
   `confirm_multiline_paste`, `restore_tabs`, `notify_popup`.
 - `fast_symbols` (default true): the symbol/emoji picture cache. Set false if symbols look wrong.
-- `input_box` (default true): the typing box under Claude tabs.
+- `input_box` (default false): open the Rich input box under Claude tabs from the start.
+- `toolbar` (default true): the bar with the mic and Rich input buttons under Claude tabs.
+- `instant_typing` (default true): show typed letters before Claude draws them.
+- `thumbnails` (default true): small pictures at the right edge, click to open big.
 - `mouse_select` (default true): a drag selects text even when the program uses the mouse.
 
 ## Testing a new build without touching the one you work in

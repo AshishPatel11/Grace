@@ -33,9 +33,18 @@ pub struct Config {
     pub notify_popup: bool,
     /// Draw symbols and emoji once and reuse the picture (about 30x faster). Turn off if they look wrong.
     pub fast_symbols: bool,
-    /// A typing box under each Claude tab: text is edited here (instant) and sent on Enter.
-    /// Ctrl+Shift+I hides it for one tab.
+    /// Open the "Rich input" box under each Claude tab from the start: text is edited
+    /// there like in Word and sent on Enter. Off = type straight into Claude's own line;
+    /// the toolbar button or Ctrl+Shift+I opens the box for one tab.
     pub input_box: bool,
+    /// A thin bar under each Claude tab with the mic and "Rich input" buttons.
+    pub toolbar: bool,
+    /// Letters typed into Claude's own input line show at once, before Claude draws them
+    /// (Claude can stall for a few hundred ms in a long chat).
+    pub instant_typing: bool,
+    /// Small pictures at the right edge, next to each line with `[Image #N]` or an image
+    /// file path. Click one to see it big.
+    pub thumbnails: bool,
     /// Drag with the mouse selects text even when the program (Claude) uses the mouse.
     /// A click without dragging still goes to the program.
     pub mouse_select: bool,
@@ -89,7 +98,10 @@ impl Default for Config {
             restore_tabs: true,
             notify_popup: true,
             fast_symbols: true,
-            input_box: true,
+            input_box: false,
+            toolbar: true,
+            instant_typing: true,
+            thumbnails: true,
             mouse_select: true,
             profiles,
         }

@@ -5,6 +5,7 @@ mod app;
 mod compose;
 mod composebox;
 mod config;
+mod folders;
 mod gfx;
 mod images;
 mod input;
@@ -12,10 +13,13 @@ mod ipc;
 mod layout;
 mod links;
 mod pane;
+mod predict;
 mod preview;
 mod procmon;
 mod render;
 mod theme;
+mod thumbs;
+mod toolbar;
 mod win;
 
 use std::cell::RefCell;
@@ -90,6 +94,11 @@ fn run_deferred(hwnd: HWND) {
             Deferred::Confirm { text, then } => {
                 let yes = win::confirm(hwnd, &text, "PulseTerm");
                 with_app(|a| a.after_confirm(then, yes));
+            }
+            Deferred::PickFolder { start } => {
+                if let Some(dir) = win::pick_folder(hwnd, start.as_deref()) {
+                    with_app(|a| a.open_claude_in(&dir));
+                }
             }
         }
     }

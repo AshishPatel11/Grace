@@ -293,6 +293,10 @@ pub struct Pane {
     pub compose_layout: Option<(u64, u32, windows::Win32::Graphics::DirectWrite::IDWriteTextLayout)>,
     /// Pictures pasted into Claude but not sent yet: Claude's number -> file bytes (for previews).
     pub pending_images: std::collections::HashMap<u32, Vec<u8>>,
+    /// Letters drawn before Claude drew them (see `predict.rs`).
+    pub predict: crate::predict::Predict,
+    /// Which pictures each screen row points to, by the row's content hash (thumbnails).
+    pub thumb_rows: std::collections::HashMap<u64, Vec<crate::thumbs::ThumbRef>>,
 }
 
 impl Pane {
@@ -323,6 +327,8 @@ impl Pane {
             compose: Default::default(),
             compose_layout: None,
             pending_images: Default::default(),
+            predict: Default::default(),
+            thumb_rows: Default::default(),
         }
     }
 

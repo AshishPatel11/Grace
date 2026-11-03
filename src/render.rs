@@ -274,18 +274,26 @@ impl App {
 
         self.ui.jump.clear();
         self.ui.cards.clear();
+        self.ui.thumbs.clear();
         let panes = self.ui.panes.clone();
         let multi = panes.len() > 1;
         let focus = self.focused_id();
         for (id, r) in &panes {
             self.gfx.clip(*r);
-            self.paint_pane(*id, *r, Some(*id) == focus);
+            let pics = self.paint_pane(*id, *r, Some(*id) == focus);
             if multi && Some(*id) != focus {
                 self.gfx.fill_a(*r, BG, 0.28);
             }
             self.gfx.unclip();
+            if let Some((_, gr)) = self.ui.gutters.iter().find(|(g, _)| g == id).copied() {
+                self.gfx.clip(gr);
+                let oy = self.text_origin(*r).1;
+                self.paint_thumbs(*id, gr, oy, pics);
+                self.gfx.unclip();
+            }
         }
         self.paint_boxes();
+        self.paint_toolbars();
         for d in &self.ui.dividers {
             let hot = matches!(&self.ui.drag, Drag::Divider(x) if x.path == d.path) || d.rect.inset(-self.s(3.0)).contains(self.ui.mouse.0, self.ui.mouse.1);
             let c = if hot { ACCENT } else { BORDER };
@@ -300,6 +308,7 @@ impl App {
         self.paint_tooltip();
         self.paint_preview();
         self.paint_toast();
+        self.paint_modal();
         self.frame_us.push_back(t0.elapsed().as_micros() as u64);
         if self.frame_us.len() > 120 {
             self.frame_us.pop_front();
@@ -310,19 +319,31 @@ impl App {
         }
     }
 
-    fn paint_pane(&mut self, id: u64, r: Rect, focused: bool) {
+    /// Draws one pane. Returns the rows that point to a picture (for thumbnails).
+    fn paint_pane(&mut self, id: u64, r: Rect, focused: bool) -> Vec<(usize, crate::thumbs::ThumbRef)> {
         let (ox, oy) = self.text_origin(r);
-        let Some(p) = self.panes.get(&id) else { return };
+        let Some(p) = self.panes.get(&id) else { return Vec::new() };
         if let Some(d) = &p.dormant {
             let d = d.clone();
             let cwd = p.cwd.clone().unwrap_or_default();
             let title = p.display_title();
             self.paint_card(id, r, &d, &cwd, &title);
-            return;
+            return Vec::new();
         }
-        let Some(live) = &p.live else { return };
+        let Some(live) = &p.live else { return Vec::new() };
         let term = live.term.clone();
         let pcols = p.cols.max(1);
+        let want_thumbs = self.ui.gutters.iter().any(|(g, _)| *g == id);
+
+        // Letters we drew before Claude did: drop the ones Claude has drawn by now.
+        let (guesses, guess_cursor) = {
+            let p = self.panes.get_mut(&id).unwrap();
+            if !p.predict.guesses.is_empty() {
+                let t = term.lock();
+                p.predict.settle(&*t);
+            }
+            (p.predict.guesses.clone(), p.predict.cursor)
+        };
 
         // 1) Copy what is on screen, then let go of the terminal at once, so the
         //    program can keep printing while we draw. Only visible rows are copied:
@@ -386,6 +407,22 @@ impl App {
         let cols = snap.cols;
         let fast = self.cfg.fast_symbols;
         let p = self.panes.get_mut(&id).unwrap();
+        let mut pics = Vec::new();
+        if want_thumbs {
+            let cwd = p.stats.claude.as_ref().map(|c| c.cwd.clone()).filter(|c| !c.is_empty()).or_else(|| p.cwd.clone());
+            if p.thumb_rows.len() > 3000 {
+                p.thumb_rows.clear();
+            }
+            for (row, (hash, _, cells)) in snap.rows.iter().enumerate() {
+                let refs = p.thumb_rows.entry(*hash).or_insert_with(|| {
+                    let text: String = cells.iter().map(|c| c.c).collect();
+                    crate::thumbs::scan_row(&text, cwd.as_deref())
+                });
+                if let Some(first) = refs.first() {
+                    pics.push((row, first.clone()));
+                }
+            }
+        }
         for (row, (hash, line, cells)) in snap.rows.iter().enumerate() {
             let y = oy + row as f32 * ch;
             let mut run: Option<(usize, Rgb)> = None;
@@ -436,20 +473,43 @@ impl App {
         self.perf.2 += t_draw.elapsed().as_micros() as u64;
         self.perf.3 += shaped;
 
+        // Letters typed but not drawn by Claude yet (see predict.rs), in Claude's colour.
+        for q in &guesses {
+            let row = q.line + snap.off;
+            if row < 0 || row as usize >= snap.lines {
+                continue;
+            }
+            let (x, y) = (ox + q.col as f32 * cw, oy + row as f32 * ch);
+            g.fill(Rect::new(x, y, cw, ch), BG);
+            if q.clear_rest {
+                g.fill(Rect::new(x + cw, y, (cols.saturating_sub(q.col + 1)) as f32 * cw, ch), BG);
+            }
+            if q.ch != ' ' {
+                if let Some(l) = g.make_layout(&wstr(&q.ch.to_string()), 0, false, false) {
+                    g.draw_layout(&l, x, y, q.color);
+                }
+            }
+        }
+
         // Cursor. Not shown while you type in the box below (the box has its own caret).
-        let (cursor, off, lines) = (snap.cursor, snap.off, snap.lines);
+        // While guesses wait, it sits after the last guessed letter.
+        let (mut cursor, off, lines) = (snap.cursor, snap.off, snap.lines);
+        let guessed = guess_cursor.filter(|_| !guesses.is_empty());
+        if let Some((l, c)) = guessed {
+            cursor.point = Point::new(Line(l), Column(c));
+        }
         let crow = cursor.point.line.0 + off;
         let boxed = self.box_takes_keys() == Some(id);
         if !boxed && cursor.shape != CursorShape::Hidden && crow >= 0 && (crow as usize) < lines && (self.cursor_on || !focused) {
             let x = ox + cursor.point.column.0 as f32 * cw;
             let y = oy + crow as f32 * ch;
-            let wide = if snap.cursor_wide { 2.0 } else { 1.0 };
+            let wide = if snap.cursor_wide && guessed.is_none() { 2.0 } else { 1.0 };
             let cr = Rect::new(x, y, cw * wide, ch);
             let thin = (2.0 * g.scale).round().max(1.0);
             match (cursor.shape, focused && self.focused) {
                 (CursorShape::Block, true) => {
                     g.fill(cr, CURSOR);
-                    let c = snap.cursor_char;
+                    let c = if guessed.is_some() { ' ' } else { snap.cursor_char };
                     if c != ' ' && !is_box(c) {
                         let s = wstr(&c.to_string());
                         if let Some(l) = g.make_layout(&s, 0, false, false) {
@@ -483,6 +543,7 @@ impl App {
             g.text(&label, &g.ui_center, cr, TEXT);
             self.ui.jump.push((id, cr));
         }
+        pics
     }
 
     fn paint_card(&mut self, id: u64, r: Rect, d: &crate::pane::Dormant, cwd: &str, title: &str) {

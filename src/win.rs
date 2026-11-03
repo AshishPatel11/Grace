@@ -104,6 +104,35 @@ pub fn flash(hwnd: HWND) {
     }
 }
 
+/// Windows' "choose a folder" dialog. Returns the folder, or None if cancelled.
+pub fn pick_folder(hwnd: HWND, start: Option<&str>) -> Option<String> {
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS,
+        SIGDN_FILESYSPATH,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dlg.GetOptions().ok()?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST).ok()?;
+        let _ = dlg.SetTitle(w!("Open Claude in this folder"));
+        let _ = dlg.SetOkButtonLabel(w!("Open Claude here"));
+        if let Some(s) = start {
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(s), None) {
+                let _ = dlg.SetFolder(&item);
+            }
+        }
+        // Cancel comes back as an error.
+        dlg.Show(Some(hwnd)).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const _));
+        s
+    }
+}
+
 pub fn confirm(hwnd: HWND, text: &str, title: &str) -> bool {
     unsafe {
         MessageBoxW(Some(hwnd), &HSTRING::from(text), &HSTRING::from(title), MB_YESNO | MB_ICONWARNING) == IDYES
