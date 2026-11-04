@@ -19,6 +19,7 @@
 //! 10 seconds to stop.
 
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -40,6 +41,17 @@ const SILENCE: Duration = Duration::from_secs(10);
 const FINISH: Duration = Duration::from_millis(2000);
 /// Right Alt let go sooner than this: a tap, not talk. Nothing is typed.
 const TAP: Duration = Duration::from_millis(300);
+/// How long the modern engine may take to stop. Normally well under a second, but once
+/// Windows took 104 s, and the mic showed "Finishing…" all that time.
+const STOP_WAIT: Duration = Duration::from_secs(3);
+/// The window's own limit: this long after a stop, free the mic even if the listening
+/// thread has not answered (so a new press always works).
+const STOP_GIVE_UP: Duration = Duration::from_millis(4500);
+/// The same for Whisper, which does its work after the stop (2 minutes of talk take
+/// about 20 s on a 6-core PC with the base model).
+const WHISPER_GIVE_UP: Duration = Duration::from_secs(90);
+/// Timer id for that check (1 = cursor blink, 2 = message at the bottom).
+pub const TIMER_VOICE: usize = 3;
 /// Windows' "the speech privacy policy was not accepted" error: Online speech
 /// recognition is off, so the modern engine may not listen.
 const PRIVACY_OFF: u32 = 0x8004_5509;
@@ -49,7 +61,9 @@ const TURN_ON: &str = "For better results, turn on Online speech recognition (Se
 /// Which engine `voice_engine` asks for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode {
-    /// The modern engine when Windows allows it, else the offline one.
+    /// Whisper on this PC (whisper.rs). The default ("auto").
+    Whisper,
+    /// Windows' modern engine, then the offline one if Windows does not allow it.
     Auto,
     Modern,
     Offline,
@@ -60,16 +74,18 @@ pub enum Mode {
 impl Mode {
     pub fn parse(s: &str) -> Mode {
         match s.trim().to_ascii_lowercase().as_str() {
+            "windows" => Mode::Auto,
             "modern" | "online" => Mode::Modern,
             "offline" | "sapi" => Mode::Offline,
-            "win+h" | "winh" | "windows" => Mode::WinH,
-            _ => Mode::Auto,
+            "win+h" | "winh" => Mode::WinH,
+            _ => Mode::Whisper,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Engine {
+    Whisper,
     Modern,
     Offline,
 }
@@ -80,10 +96,13 @@ pub enum VoiceEvent {
     Started { session: u64, engine: Engine, note: Option<String> },
     /// The words so far, while you talk ("" = nothing pending).
     Partial { session: u64, text: String },
-    /// Final words for one phrase (you paused).
-    Heard { session: u64, text: String },
+    /// Final words for one phrase (you paused). `sure` = false when the engine says it
+    /// may be wrong (then it is typed only for push to talk, where you meant to talk).
+    Heard { session: u64, text: String, sure: bool },
     /// Listening is over (stopped, silence, or an error).
     Ended { session: u64, error: Option<String> },
+    /// The Whisper download finished (or failed). Not tied to a listen.
+    Setup { error: Option<String> },
 }
 
 impl VoiceEvent {
@@ -93,6 +112,7 @@ impl VoiceEvent {
             | VoiceEvent::Partial { session, .. }
             | VoiceEvent::Heard { session, .. }
             | VoiceEvent::Ended { session, .. } => *session,
+            VoiceEvent::Setup { .. } => 0,
         }
     }
 }
@@ -110,8 +130,12 @@ pub struct Voice {
     pub stopping: bool,
     /// Push to talk: when Right Alt went down (it stops when Right Alt comes up).
     pub hold: Option<Instant>,
+    /// Started with Right Alt (stays true after Right Alt comes up).
+    pub push: bool,
     /// Throw away what is heard (a tap, or Right Alt was part of a shortcut).
     pub discard: bool,
+    /// When stop was asked.
+    stop_at: Option<Instant>,
     stop: Sender<()>,
 }
 
@@ -174,9 +198,17 @@ impl Out {
     }
 }
 
+/// What a listen needs to know from the settings.
+struct Opts {
+    mode: Mode,
+    language: String,
+    model: String,
+    /// Listen to this .wav file instead of the mic (tests).
+    wav: Option<String>,
+}
+
 /// Start listening on a new thread. Send `()` on the returned sender to stop.
-/// `wav`: listen to this file instead of the mic (tests).
-fn start(session: u64, mode: Mode, language: String, wav: Option<String>, tx: Sender<AppEvent>) -> Sender<()> {
+fn start(session: u64, opts: Opts, tx: Sender<AppEvent>) -> Sender<()> {
     let (stop_tx, stop_rx) = channel::<()>();
     let wake = stop_tx.clone();
     let out = Out(tx);
@@ -184,7 +216,11 @@ fn start(session: u64, mode: Mode, language: String, wav: Option<String>, tx: Se
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
-        let result = listen(session, mode, &language, wav, &out, &stop_rx, wake);
+        let result = if opts.mode == Mode::Whisper {
+            whisper_listen(session, &opts.model, opts.wav.as_deref(), &out, &stop_rx)
+        } else {
+            listen(session, opts.mode, &opts.language, opts.wav, &out, &stop_rx, wake)
+        };
         out.send(VoiceEvent::Ended { session, error: result.err() });
         unsafe { CoUninitialize() };
     });
@@ -262,6 +298,8 @@ fn explain(e: &windows::core::Error) -> String {
 // ---------------- 1. the modern engine ----------------
 
 struct ModernRun {
+    /// Kept so the recognizer lives as long as the listen.
+    #[allow(dead_code)]
     rec: windows::Media::SpeechRecognition::SpeechRecognizer,
     session: windows::Media::SpeechRecognition::SpeechContinuousRecognitionSession,
     done: Arc<AtomicBool>,
@@ -286,11 +324,22 @@ fn modern_start(session: u64, language: &str, out: &Out, wake: Sender<()>) -> wi
         return Err(windows::core::Error::new(windows::Win32::Foundation::E_FAIL, format!("the modern engine could not get ready (status {})", status.0)));
     }
     let s = rec.ContinuousRecognitionSession()?;
-    s.SetAutoStopSilenceTimeout(TimeSpan { Duration: SILENCE.as_millis() as i64 * 10_000 })?;
+    let quiet = TimeSpan { Duration: SILENCE.as_millis() as i64 * 10_000 };
+    // Windows stops after 5 s if you have not started talking yet (status 7, "timeout").
+    // Give the first words as long as later pauses get.
+    rec.Timeouts()?.SetInitialSilenceTimeout(quiet)?;
+    s.SetAutoStopSilenceTimeout(quiet)?;
 
+    // The log says what the engine heard (how much and how sure, never the words), so a
+    // listen that typed nothing can be explained.
+    let t0 = Instant::now();
     let o = out.clone();
+    let first = Arc::new(AtomicBool::new(false));
     rec.HypothesisGenerated(&TypedEventHandler::<SpeechRecognizer, SpeechRecognitionHypothesisGeneratedEventArgs>::new(move |_, a| {
         if let Some(a) = a.as_ref() {
+            if !first.swap(true, Ordering::SeqCst) {
+                crate::log(&format!("voice: first words heard {} ms after start", t0.elapsed().as_millis()));
+            }
             o.send(VoiceEvent::Partial { session, text: a.Hypothesis()?.Text()?.to_string() });
         }
         Ok(())
@@ -300,12 +349,19 @@ fn modern_start(session: u64, language: &str, out: &Out, wake: Sender<()>) -> wi
         move |_, a| {
             if let Some(a) = a.as_ref() {
                 let r = a.Result()?;
-                let sure = r.Confidence()? != SpeechRecognitionConfidence::Rejected;
-                let text = if sure { r.Text()?.to_string() } else { String::new() };
+                let confidence = r.Confidence()?;
+                let text = r.Text()?.to_string();
+                crate::log(&format!(
+                    "voice: result status {}, confidence {} (0 high .. 3 rejected), {} characters, {} ms after start",
+                    r.Status()?.0,
+                    confidence.0,
+                    text.chars().count(),
+                    t0.elapsed().as_millis()
+                ));
                 if text.trim().is_empty() {
                     o.send(VoiceEvent::Partial { session, text: String::new() });
                 } else {
-                    o.send(VoiceEvent::Heard { session, text });
+                    o.send(VoiceEvent::Heard { session, text, sure: confidence != SpeechRecognitionConfidence::Rejected });
                 }
             }
             Ok(())
@@ -316,7 +372,9 @@ fn modern_start(session: u64, language: &str, out: &Out, wake: Sender<()>) -> wi
     let (d, e) = (done.clone(), error.clone());
     s.Completed(&TypedEventHandler::<SpeechContinuousRecognitionSession, SpeechContinuousRecognitionCompletedEventArgs>::new(move |_, a| {
         if let Some(a) = a.as_ref() {
-            if let Some(msg) = modern_problem(a.Status()?) {
+            let status = a.Status()?;
+            crate::log(&format!("voice: modern engine finished, status {}", status.0));
+            if let Some(msg) = modern_problem(status) {
                 *e.lock().unwrap() = Some(msg);
             }
         }
@@ -341,18 +399,45 @@ fn modern_problem(s: windows::Media::SpeechRecognition::SpeechRecognitionResultS
     }
 }
 
+/// Wait until `finished()` is true, but not longer than `limit`. False = gave up.
+fn wait_until(finished: impl Fn() -> bool, limit: Duration) -> bool {
+    let t = Instant::now();
+    while !finished() {
+        if t.elapsed() >= limit {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// Wait until the mic is clicked again (or the engine stops by itself), then stop.
 fn modern_wait(m: ModernRun, stop: &Receiver<()>) -> Result<(), String> {
     // Both the window's stop and the engine's "finished" handler send here.
     let _ = stop.recv();
     if !m.done.load(Ordering::SeqCst) {
         // StopAsync (not Cancel) still delivers the words of a sentence you were saying.
-        if let Ok(a) = m.session.StopAsync() {
-            let _ = a.join();
+        // An async step's status is 0 while it runs.
+        let t = Instant::now();
+        match m.session.StopAsync() {
+            Ok(a) => {
+                if wait_until(|| a.Status().map_or(true, |s| s.0 != 0), STOP_WAIT) {
+                    crate::log(&format!("voice: modern engine stopped in {} ms", t.elapsed().as_millis()));
+                } else {
+                    crate::log("voice: modern engine did not stop within 3 s, cancelling it");
+                    let _ = a.Cancel();
+                    if let Ok(c) = m.session.CancelAsync() {
+                        wait_until(|| c.Status().map_or(true, |s| s.0 != 0), Duration::from_secs(1));
+                    }
+                }
+            }
+            Err(e) => crate::log(&format!("voice: modern engine stop failed: {}", explain(&e))),
         }
     }
-    let _ = m.rec.Close();
     let err = m.error.lock().unwrap().take();
+    // No Close(): it can wait for the engine like StopAsync did. Letting go of the
+    // objects is enough.
+    drop(m);
     err.map_or(Ok(()), Err)
 }
 
@@ -462,7 +547,7 @@ unsafe fn offline_run(session: u64, wav: Option<&str>, out: &Out, stop: &Receive
                     pending = false;
                     last = Instant::now();
                     match obj.as_ref().and_then(|o| phrase_text(o)) {
-                        Some(t) if !t.trim().is_empty() => out.send(VoiceEvent::Heard { session, text: t }),
+                        Some(t) if !t.trim().is_empty() => out.send(VoiceEvent::Heard { session, text: t, sure: true }),
                         _ => out.send(VoiceEvent::Partial { session, text: String::new() }),
                     }
                 }
@@ -493,11 +578,93 @@ unsafe fn offline_run(session: u64, wav: Option<&str>, out: &Out, stop: &Receive
     Ok(())
 }
 
+// ---------------- 3. Whisper on this PC (the default) ----------------
+
+/// Longest recording (the mic button left on by mistake).
+const MAX_RECORD: Duration = Duration::from_secs(120);
+
+#[link(name = "winmm")]
+extern "system" {
+    fn mciSendStringW(command: PCWSTR, ret: PWSTR, ret_len: u32, callback: windows::Win32::Foundation::HWND) -> u32;
+    fn mciGetErrorStringW(error: u32, text: PWSTR, len: u32) -> i32;
+}
+
+/// One command to Windows' simple recorder (MCI), like "record rec". Err = its message.
+fn mci(cmd: &str) -> Result<(), String> {
+    let wide = HSTRING::from(cmd);
+    let e = unsafe { mciSendStringW(PCWSTR(wide.as_ptr()), PWSTR::null(), 0, windows::Win32::Foundation::HWND::default()) };
+    if e == 0 {
+        return Ok(());
+    }
+    let mut buf = [0u16; 256];
+    unsafe { mciGetErrorStringW(e, PWSTR(buf.as_mut_ptr()), buf.len() as u32) };
+    let msg = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)]);
+    Err(format!("the mic could not record ({msg})"))
+}
+
+/// Record until stopped (16 kHz mono .wav, the format Whisper wants), then turn it into
+/// text. Runs on the voice thread.
+fn whisper_listen(session: u64, model: &str, wav: Option<&str>, out: &Out, stop: &Receiver<()>) -> Result<(), String> {
+    let (path, temp) = match wav {
+        // A test: the "recording" is this file.
+        Some(w) => {
+            out.send(VoiceEvent::Started { session, engine: Engine::Whisper, note: None });
+            (PathBuf::from(w), false)
+        }
+        None => {
+            let path = std::env::temp_dir().join(format!("pulseterm-voice-{}-{session}.wav", std::process::id()));
+            let rec = format!("ptrec{session}");
+            mci(&format!("open new type waveaudio alias {rec}"))?;
+            let recorded = (|| {
+                mci(&format!("set {rec} bitspersample 16 samplespersec 16000 channels 1 bytespersec 32000 alignment 2"))?;
+                mci(&format!("record {rec}"))?;
+                out.send(VoiceEvent::Started { session, engine: Engine::Whisper, note: None });
+                let t0 = Instant::now();
+                // Wait for the stop: the mic button, Esc, or Right Alt let go.
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(Duration::from_millis(100)) {
+                    if t0.elapsed() >= MAX_RECORD {
+                        break;
+                    }
+                }
+                mci(&format!("stop {rec}"))?;
+                mci(&format!("save {rec} \"{}\"", path.display()))
+            })();
+            let _ = mci(&format!("close {rec}"));
+            recorded?;
+            (path, true)
+        }
+    };
+    // Less than half a second of sound (a 44-byte header + 16000 bytes/s): nothing said.
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let result = if size < 44 + 16_000 {
+        Ok(())
+    } else {
+        let t = Instant::now();
+        let r = crate::whisper::transcribe(&path, model);
+        crate::log(&format!("whisper: {:.1} s of sound turned into text in {} ms", (size - 44) as f32 / 32_000.0, t.elapsed().as_millis()));
+        r.map(|text| {
+            if let Some(t) = crate::whisper::clean(&text) {
+                out.send(VoiceEvent::Heard { session, text: t, sure: true });
+            }
+        })
+    };
+    if temp {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
+}
+
 // ---------------- the window side ----------------
 
 impl App {
     /// The mic button and Ctrl+Shift+M: start listening, or stop.
     pub fn toggle_voice(&mut self) {
+        // A press while an old listen is still finishing starts a new one: the old one's
+        // last events are ignored (they carry the old session number).
+        if self.voice.as_ref().is_some_and(|v| v.stopping) {
+            crate::log("voice: new press while the last listen was still finishing; letting it go");
+            self.voice = None;
+        }
         if self.voice.is_some() {
             self.stop_voice();
             return;
@@ -508,17 +675,41 @@ impl App {
             press_win_h();
             return;
         }
+        // Whisper is downloaded on first start; until it is there, say how far it is.
+        if mode == Mode::Whisper && !crate::whisper::ready(&self.cfg.voice_model) {
+            crate::whisper::ensure(&self.cfg.voice_model, self.tx.clone());
+            let msg = crate::whisper::progress_text().unwrap_or_else(|| "Getting the speech model for the mic ready…".into());
+            self.show_toast(msg);
+            return;
+        }
         self.guess_clear();
         self.voice_seq += 1;
-        let wav = self.voice_test_wav.clone().filter(|_| crate::dev());
-        let stop = start(self.voice_seq, mode, self.cfg.voice_language.clone(), wav, self.tx.clone());
-        self.voice = Some(Voice { session: self.voice_seq, pane: id, engine: None, partial: String::new(), stopping: false, hold: None, discard: false, stop });
+        let opts = Opts {
+            mode,
+            language: self.cfg.voice_language.clone(),
+            model: self.cfg.voice_model.clone(),
+            wav: self.voice_test_wav.clone().filter(|_| crate::dev()),
+        };
+        let stop = start(self.voice_seq, opts, self.tx.clone());
+        self.voice = Some(Voice {
+            session: self.voice_seq,
+            pane: id,
+            engine: None,
+            partial: String::new(),
+            stopping: false,
+            hold: None,
+            push: false,
+            discard: false,
+            stop_at: None,
+            stop,
+        });
         self.invalidate();
     }
 
     /// Right Alt went down: push to talk. Listens until Right Alt comes up.
     pub fn voice_hold_down(&mut self) {
-        if !self.cfg.voice_hold || self.voice.is_some() || Mode::parse(&self.cfg.voice_engine) == Mode::WinH {
+        let busy = self.voice.as_ref().is_some_and(|v| !v.stopping);
+        if !self.cfg.voice_hold || busy || Mode::parse(&self.cfg.voice_engine) == Mode::WinH {
             return;
         }
         if !self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.live.is_some()) {
@@ -527,6 +718,37 @@ impl App {
         self.toggle_voice();
         if let Some(v) = &mut self.voice {
             v.hold = Some(Instant::now());
+            v.push = true;
+        }
+    }
+
+    /// The window's timer after a stop: if the listening thread still has not answered,
+    /// free the mic anyway (the thread's late events are ignored).
+    pub fn voice_watchdog(&mut self) {
+        let Some(v) = &self.voice else { return };
+        // Whisper turns the speech into text after the stop: a long talk takes a while.
+        let limit = if v.engine == Some(Engine::Whisper) { WHISPER_GIVE_UP } else { STOP_GIVE_UP };
+        match v.stop_at {
+            Some(t) if t.elapsed() >= limit => {
+                crate::log("voice: no answer from the speech engine after stop; freeing the mic");
+                self.voice = None;
+                self.show_toast("The speech engine did not stop in time. The mic is free again.".into());
+            }
+            Some(t) => unsafe {
+                // Woken early: check again when the time is up.
+                let left = limit.saturating_sub(t.elapsed()).as_millis().max(50) as u32;
+                windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), TIMER_VOICE, left, None);
+            },
+            None => {}
+        }
+        self.invalidate();
+    }
+
+    /// A pane closed: stop listening for it.
+    pub fn voice_pane_closed(&mut self, id: u64) {
+        if self.voice.as_ref().is_some_and(|v| v.pane == id) {
+            self.stop_voice();
+            self.voice = None;
         }
     }
 
@@ -554,8 +776,13 @@ impl App {
     pub fn stop_voice(&mut self) -> bool {
         let Some(v) = &mut self.voice else { return false };
         if !v.stopping {
+            crate::log(&format!("voice: stop asked (push to talk: {}, discard: {})", v.push, v.discard));
             v.stopping = true;
+            v.stop_at = Some(Instant::now());
             let _ = v.stop.send(());
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), TIMER_VOICE, STOP_GIVE_UP.as_millis() as u32, None);
+            }
         }
         self.invalidate();
         true
@@ -566,7 +793,22 @@ impl App {
         self.voice.as_ref().filter(|v| v.pane == id)
     }
 
+    /// At start: download Whisper if the mic uses it and it is not there yet.
+    pub fn voice_startup(&mut self) {
+        if Mode::parse(&self.cfg.voice_engine) == Mode::Whisper && crate::whisper::ensure(&self.cfg.voice_model, self.tx.clone()) {
+            let mb = (crate::whisper::model(&self.cfg.voice_model).size + 10_000_000) / 1_000_000;
+            self.show_toast(format!("Downloading the speech model for the mic (about {mb} MB). This happens once."));
+        }
+    }
+
     pub fn on_voice(&mut self, ev: VoiceEvent) {
+        if let VoiceEvent::Setup { error } = ev {
+            match error {
+                Some(e) => self.show_toast(format!("The mic's speech model could not be downloaded: {e}. Press the mic to try again.")),
+                None => self.show_toast("The mic is ready: hold Right Alt and talk, let go to type it.".into()),
+            }
+            return;
+        }
         let Some(v) = &mut self.voice else { return };
         if ev.session() != v.session {
             return;
@@ -583,6 +825,9 @@ impl App {
             }
             VoiceEvent::Partial { text, .. } => v.partial = text,
             VoiceEvent::Heard { .. } if v.discard => v.partial.clear(),
+            // Unsure words are typed only when you held Right Alt to talk: then you meant
+            // to talk. With the mic button left on, they may be noise.
+            VoiceEvent::Heard { sure: false, .. } if !v.push => v.partial.clear(),
             VoiceEvent::Heard { text, .. } => {
                 v.partial.clear();
                 let id = v.pane;
@@ -594,6 +839,7 @@ impl App {
                     self.show_toast(e);
                 }
             }
+            VoiceEvent::Setup { .. } => {}
         }
         self.invalidate();
     }
@@ -652,7 +898,7 @@ impl App {
     pub fn voice_fake_heard(&mut self, text: &str) -> bool {
         let Some(v) = &self.voice else { return false };
         let session = v.session;
-        self.on_voice(VoiceEvent::Heard { session, text: text.to_string() });
+        self.on_voice(VoiceEvent::Heard { session, text: text.to_string(), sure: true });
         true
     }
 }
@@ -690,8 +936,10 @@ mod tests {
 
     #[test]
     fn modes() {
-        assert_eq!(Mode::parse(""), Mode::Auto);
-        assert_eq!(Mode::parse("auto"), Mode::Auto);
+        assert_eq!(Mode::parse(""), Mode::Whisper);
+        assert_eq!(Mode::parse("auto"), Mode::Whisper);
+        assert_eq!(Mode::parse("whisper"), Mode::Whisper);
+        assert_eq!(Mode::parse("windows"), Mode::Auto);
         assert_eq!(Mode::parse("Offline"), Mode::Offline);
         assert_eq!(Mode::parse("modern"), Mode::Modern);
         assert_eq!(Mode::parse("win+h"), Mode::WinH);

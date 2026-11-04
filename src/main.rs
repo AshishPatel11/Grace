@@ -22,6 +22,7 @@ mod thumbs;
 mod blink;
 mod toolbar;
 mod voice;
+mod whisper;
 mod win;
 
 use std::cell::RefCell;
@@ -152,6 +153,12 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             // looks from the clock (blink.rs) and sets the timer for the step after.
             let _ = KillTimer(Some(hwnd), TIMER_BLINK);
             with_app(|a| a.invalidate());
+            Some(0)
+        }
+        WM_TIMER if wp.0 == voice::TIMER_VOICE => {
+            // A stop the speech engine has not answered yet: free the mic if it is late.
+            let _ = KillTimer(Some(hwnd), voice::TIMER_VOICE);
+            with_app(|a| a.voice_watchdog());
             Some(0)
         }
         WM_TIMER if wp.0 == 2 => {
@@ -538,6 +545,8 @@ fn main() {
                 }
                 None => a.restore_or_new(true),
             }
+            // First start on this PC: download the mic's speech model in the background.
+            a.voice_startup();
         });
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

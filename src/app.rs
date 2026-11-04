@@ -544,6 +544,7 @@ impl App {
     }
 
     fn kill_pane(&mut self, id: u64) {
+        self.voice_pane_closed(id);
         if let Some(mut p) = self.panes.remove(&id) {
             p.closing = true;
             p.live = None;
@@ -1911,6 +1912,9 @@ impl App {
         self.blink_reset();
         if !on {
             // Right Alt held for talking, then Alt+Tab away: we will never see it come up.
+            if self.voice.as_ref().is_some_and(|v| v.hold.is_some()) {
+                crate::log("voice: window lost focus while Right Alt was held");
+            }
             self.voice_hold_up();
         }
         if let Some(id) = self.focused_id() {

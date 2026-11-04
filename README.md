@@ -28,17 +28,24 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   at once. Tested by pausing Claude: "hello world" (with two Backspaces) showed while Claude was
   frozen, and Claude's text matched exactly afterwards.
 - **Toolbar under every Claude tab** (like Warp's):
-  - **Mic** (or Ctrl+Shift+M): PulseTerm listens and types what you say into Claude's input line
-    (or into Rich input when it is open). No Windows popup, nothing to click. The button turns red
-    and the words heard so far show next to it. Click it again, press Esc, or stay quiet for
-    10 seconds to stop.
-  - **Push to talk: hold Right Alt**, talk, let go. The words are typed when you let go. A quick tap
-    (under 0.3 s) types nothing, and Right Alt + another key (AltGr+E = é) still types that letter.
-  - Which speech engine: Windows' modern one when "Online speech recognition" is on (Settings >
-    Privacy & security > Speech; better results, your voice goes to Microsoft). Otherwise the old
-    offline one (SAPI): nothing leaves the PC, but it makes more mistakes and can turn room noise
-    into words. Tested with a spoken test file: "Please list all the files in this folder then show
-    me the biggest one" came out word for word, and the offline engine was ready 230 ms after the click.
+  - **Push to talk: hold Right Alt**, talk, let go. The words are typed into Claude's input line
+    (or into Rich input when it is open) about a second after you let go. No Windows popup, nothing
+    to click. A quick tap (under 0.3 s) types nothing, and Right Alt + another key (AltGr+E = é)
+    still types that letter.
+  - **Mic button** (or Ctrl+Shift+M): the same, but click to start and click again (or Esc) to stop.
+    The button is red while it records.
+  - The speech engine is **Whisper**, an AI speech model that runs on this PC (whisper.cpp): good
+    with noisy mics and accents, and your voice never leaves the PC. A small voice detector (Silero
+    VAD) cuts out the parts with no speech, so room noise is not turned into words.
+  - **First start on a PC:** PulseTerm downloads what Whisper needs, about 160 MB, into
+    `%LOCALAPPDATA%\PulseTerm\whisper` (took 20 s here). Every file is checked against a fixed SHA-256
+    fingerprint, the same ones GitHub and Hugging Face list, so a broken or changed download is never
+    used. Pressing the mic during the download shows how far it is.
+  - Measured on an Intel i5-12400F: 7 s of speech turned into text in 1.2 s ("Please list all the
+    files in this folder, then show me the biggest one." word for word, with punctuation).
+  - Why not Windows' own speech engines: on this PC the one apps may use heard nothing at all (Win+H
+    uses a newer one that apps cannot call), and the old offline one turned room noise into words.
+    They are still there as settings (`voice_engine`).
   - **Rich input** (Ctrl+Shift+I): opens a Word-like typing box for that tab. Off by default.
     It edits like Word: click to put the cursor, drag / double-click / triple-click to select,
     Shift+arrows, Ctrl+arrows (word by word), Ctrl+Backspace, Ctrl+A, Ctrl+C / X / V, Ctrl+Z / Ctrl+Y,
@@ -187,9 +194,12 @@ right-click a tab > Reload settings.
 - `instant_typing` (default true): show typed letters before Claude draws them.
 - `thumbnails` (default true): small pictures at the right edge, click to open big.
 - `mouse_select` (default true): a drag selects text even when the program uses the mouse.
-- `voice_engine` (default "auto"): the mic. "auto" = the modern engine when Windows allows it, else
-  offline. Or "modern", "offline", or "win+h" (open Windows' voice typing panel, the old way).
-- `voice_language` (default ""): language for the modern engine, like "en-IN" or "en-US".
+- `voice_engine` (default "auto"): the mic. "auto" = Whisper on this PC. Or Windows' own engines:
+  "windows" (modern, else offline), "modern", "offline", or "win+h" (open Windows' voice typing
+  panel, the old way).
+- `voice_model` (default "base.en"): the Whisper model. "small.en" (488 MB) is better with accents
+  and noise but about 3x slower; it is downloaded the first time it is chosen.
+- `voice_language` (default ""): language for Windows' modern engine, like "en-IN" or "en-US".
   "" = Windows' speech language. (The offline engine uses the one installed: here en-GB.)
 - `voice_hold` (default true): hold Right Alt to talk.
 

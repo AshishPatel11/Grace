@@ -107,7 +107,9 @@ impl App {
         }
         let live = v.engine.is_some() && !v.stopping;
         let label = match (v.stopping, v.engine) {
+            (true, Some(crate::voice::Engine::Whisper)) => "Turning speech into text…",
             (true, _) => "Finishing…",
+            (false, Some(crate::voice::Engine::Whisper)) => "Listening",
             (false, None) => "Starting the mic…",
             (false, Some(crate::voice::Engine::Modern)) => "Listening",
             (false, Some(crate::voice::Engine::Offline)) => "Listening (offline)",

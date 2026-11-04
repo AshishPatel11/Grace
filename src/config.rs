@@ -48,10 +48,13 @@ pub struct Config {
     /// Drag with the mouse selects text even when the program (Claude) uses the mouse.
     /// A click without dragging still goes to the program.
     pub mouse_select: bool,
-    /// The mic button. "auto" = Windows' modern speech engine when Windows allows it
-    /// (Online speech recognition on), else the offline one. Or "modern", "offline",
-    /// or "win+h" (open Windows' voice typing panel, the old way).
+    /// The mic button. "auto" = Whisper on this PC (downloaded on first start, about
+    /// 160 MB). Or Windows' own engines: "windows" (modern, else offline), "modern",
+    /// "offline", or "win+h" (open Windows' voice typing panel, the old way).
     pub voice_engine: String,
+    /// The Whisper model: "base.en" (148 MB, fast) or "small.en" (488 MB, better with
+    /// accents and noise, about 3x slower).
+    pub voice_model: String,
     /// Language for the modern speech engine, like "en-IN" or "en-US".
     /// "" = Windows' speech language.
     pub voice_language: String,
@@ -114,6 +117,7 @@ impl Default for Config {
             thumbnails: true,
             mouse_select: true,
             voice_engine: "auto".into(),
+            voice_model: "base.en".into(),
             voice_language: String::new(),
             voice_hold: true,
             profiles,
@@ -174,9 +178,10 @@ fn default_file_text(cfg: &Config) -> String {
          # scrollback_lines : old lines kept per pane. More lines = more RAM.\n\
          # ram_warn_mb      : tab RAM badge turns amber above this, red above twice this.\n\
          # editor           : \"code\" opens clicked files in VS Code at the line. \"\" = default app.\n\
-         # voice_engine     : the mic. \"auto\" = Windows' modern speech engine when allowed, else offline.\n\
-         #                    \"modern\", \"offline\", or \"win+h\" (Windows' voice typing panel).\n\
-         # voice_language   : like \"en-IN\" for the modern engine. \"\" = Windows' speech language.\n\
+         # voice_engine     : the mic. \"auto\" = Whisper on this PC (downloaded once, about 160 MB).\n\
+         #                    Or Windows' engines: \"windows\", \"modern\", \"offline\", \"win+h\".\n\
+         # voice_model      : Whisper model: \"base.en\" (fast) or \"small.en\" (better, 488 MB, slower).\n\
+         # voice_language   : like \"en-IN\" for Windows' modern engine. \"\" = Windows' speech language.\n\
          # voice_hold       : hold Right Alt to talk, let go to type it (push to talk).\n\
          # profiles         : what a new tab runs. default_profile picks the one for Ctrl+Shift+T.\n\n{body}"
     )
