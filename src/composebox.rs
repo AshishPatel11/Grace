@@ -15,7 +15,7 @@ use std::time::Duration;
 use alacritty_terminal::grid::Scroll;
 use windows::core::BOOL;
 use windows::Win32::Graphics::DirectWrite::{IDWriteTextLayout, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS};
-use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, SetCapture, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY};
+use windows::Win32::UI::Input::KeyboardAndMouse::SetCapture;
 
 use crate::app::{App, Drag};
 use crate::input::*;
@@ -120,21 +120,6 @@ fn hit(l: &IDWriteTextLayout, text: &[u16], x: f32, y: f32) -> usize {
     (if trailing.as_bool() { p + m.length as usize } else { p }).min(text.len())
 }
 
-fn key_input(vk: u16, up: bool) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(vk),
-                wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }
-}
-
 impl App {
     /// Should this pane show a typing box?
     pub fn box_wanted(&self, id: u64) -> bool {
@@ -184,7 +169,7 @@ impl App {
     }
 
     /// After the text changed: grow or shrink the box if the line count changed.
-    fn box_changed(&mut self, id: u64) {
+    pub(crate) fn box_changed(&mut self, id: u64) {
         if let Some(b) = self.box_hit(id) {
             let lines = self.box_layout(id, b.text.w).map(|l| lines_of(&l).len()).unwrap_or(1).clamp(1, MAX_LINES);
             if self.panes.get(&id).is_some_and(|p| p.compose.shown_lines != lines) {
@@ -269,14 +254,6 @@ impl App {
                     self.write_focused(b"\x1bv".to_vec());
                 }
             }
-        }
-    }
-
-    /// Open Windows voice typing (the same as pressing Win+H). It types into the box.
-    pub fn start_voice(&mut self) {
-        let inputs = [key_input(0x5B, false), key_input(0x48, false), key_input(0x48, true), key_input(0x5B, true)];
-        unsafe {
-            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
         }
     }
 
@@ -493,7 +470,7 @@ impl App {
             return true;
         }
         if b.mic.contains(x, y) {
-            self.start_voice();
+            self.toggle_voice();
             return true;
         }
         let pos = self.box_pos(b, x, y);
@@ -600,7 +577,7 @@ impl App {
                 } else if asking {
                     "Claude is asking you something above. Your keys go to Claude."
                 } else {
-                    "Type here. Enter sends, Shift+Enter adds a line. Win+H or the mic to talk."
+                    "Type here. Enter sends, Shift+Enter adds a line. Mic or Ctrl+Shift+M to talk."
                 };
                 g.text(hint, &g.ui, Rect::new(ox + self.s(2.0), oy, b.text.w, ch), TEXT_DIM);
             } else {
@@ -616,12 +593,13 @@ impl App {
             }
             g.unclip();
 
-            // Mic button.
+            // Mic button: red while it listens.
             let hot = b.mic.contains(mx, my);
-            if hot {
-                g.round(b.mic, b.mic.h / 2.0, TAB_HOVER, 1.0);
+            let (fill, icon) = self.mic_colors(b.id, hot);
+            if let Some(f) = fill {
+                g.round(b.mic, b.mic.h / 2.0, f, 1.0);
             }
-            g.mic(b.mic.cx(), b.mic.cy(), b.mic.h * 0.52, if hot { TEXT } else { TEXT_DIM });
+            g.mic(b.mic.cx(), b.mic.cy(), b.mic.h * 0.52, icon);
             let _ = focus;
         }
     }

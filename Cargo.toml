@@ -47,6 +47,14 @@ features = [
   "Win32_System_SystemInformation",
   "Win32_Storage_FileSystem",
   "Win32_Security",
+  "Win32_Media",
+  "Win32_Media_Audio",
+  "Win32_Media_Speech",
+  "Win32_System_Registry",
+  "Foundation",
+  "Globalization",
+  "Media",
+  "Media_SpeechRecognition",
 ]
 
 [profile.release]

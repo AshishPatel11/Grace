@@ -1,7 +1,8 @@
 //! The thin bar under a Claude tab (like Warp's): a mic button and a "Rich input" button.
 //!
-//! - Mic: opens Windows voice typing (the same as Win+H). What you say is typed into
-//!   Claude's own input line (or into the Rich input box when it is open).
+//! - Mic: listens and types what you say into Claude's own input line (or into the
+//!   Rich input box when it is open). It turns red while it listens, and the words heard
+//!   so far show next to the buttons. See `voice.rs`.
 //! - Rich input: opens or closes the Word-like typing box for this tab (Ctrl+Shift+I).
 //! - Folder: shows the folder this tab works in. Click it to open Claude in another
 //!   folder (in a new tab), or to show this folder in Explorer. See `folders.rs`.
@@ -9,6 +10,7 @@
 use windows::Win32::UI::Input::KeyboardAndMouse::SetCapture;
 
 use crate::app::App;
+use crate::gfx::Rgb;
 use crate::layout::Rect;
 use crate::theme::*;
 
@@ -67,7 +69,7 @@ impl App {
         self.focus_pane(t.id);
         if t.mic.contains(x, y) {
             self.guess_clear();
-            self.start_voice();
+            self.toggle_voice();
         } else if t.rich.contains(x, y) {
             self.box_toggle();
         } else if t.folder.contains(x, y) {
@@ -82,17 +84,70 @@ impl App {
         true
     }
 
+    /// The mic button's colors: (background, icon). Red while it listens.
+    pub fn mic_colors(&self, id: u64, hot: bool) -> (Option<Rgb>, Rgb) {
+        match self.voice_on(id) {
+            Some(v) if v.stopping => (Some(TEXT_DIM.mix(BG, 0.5)), TEXT),
+            Some(v) if v.engine.is_none() => (Some(RED.mix(BG, 0.5)), CURSOR),
+            Some(_) => (Some(RED), CURSOR),
+            None if hot => (Some(TAB_HOVER), TEXT),
+            None => (None, TEXT_DIM),
+        }
+    }
+
+    /// Next to the buttons while the mic listens: "Listening" and the words so far.
+    fn paint_voice_status(&self, t: &ToolHit) {
+        let Some(v) = self.voice_on(t.id) else { return };
+        let g = &self.gfx;
+        let after = if t.folder.w > self.s(40.0) { t.folder.right() } else { t.rich.right() };
+        let x0 = after + self.s(12.0);
+        let right = t.rect.right() - self.s(10.0);
+        if right - x0 < self.s(60.0) {
+            return;
+        }
+        let live = v.engine.is_some() && !v.stopping;
+        let label = match (v.stopping, v.engine) {
+            (true, _) => "Finishing…",
+            (false, None) => "Starting the mic…",
+            (false, Some(crate::voice::Engine::Modern)) => "Listening",
+            (false, Some(crate::voice::Engine::Offline)) => "Listening (offline)",
+        };
+        let dot = self.s(3.5);
+        g.circle(x0 + dot, t.rect.cy(), dot, if live { RED } else { AMBER });
+        let lx = x0 + dot * 2.0 + self.s(6.0);
+        let lw = g.measure(label, &g.ui_small);
+        g.text(label, &g.ui_small, Rect::new(lx, t.rect.y, lw + 2.0, t.rect.h), TEXT);
+        let px = lx + lw + self.s(10.0);
+        let room = right - px;
+        if room < self.s(30.0) {
+            return;
+        }
+        // The text box is as wide as the text, so it starts right after the label.
+        let (s, c) = if !v.partial.is_empty() {
+            (crate::voice::tail_that_fits(&v.partial, room, |s| g.measure(s, &g.ui_small)), FG)
+        } else if live {
+            let hint = if v.hold.is_some() { "talk now · let go of Right Alt to type it" } else { "talk now · click the mic or press Esc to stop" };
+            (hint.to_string(), TEXT_DIM)
+        } else {
+            return;
+        };
+        let w = (g.measure(&s, &g.ui_small) + 2.0).min(room);
+        g.text(&s, &g.ui_small, Rect::new(px, t.rect.y, w, t.rect.h), c);
+    }
+
     pub fn paint_toolbars(&self) {
         let g = &self.gfx;
         let (mx, my) = self.ui.mouse;
         let r = self.s(5.0);
         for t in &self.ui.tools {
             let open = self.ui.boxes.iter().any(|b| b.id == t.id);
-            // Mic: an icon-only chip.
+            // Mic: an icon-only chip. Red while it listens.
             let hot = t.mic.contains(mx, my);
-            g.round(t.mic, r, if hot { TAB_HOVER } else { BG }, 1.0);
-            g.outline(t.mic, r, if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
-            g.mic(t.mic.cx(), t.mic.cy(), t.mic.h * 0.56, if hot { TEXT } else { TEXT_DIM });
+            let (fill, icon) = self.mic_colors(t.id, hot);
+            g.round(t.mic, r, fill.unwrap_or(BG), 1.0);
+            g.outline(t.mic, r, if fill.is_some() && !hot { fill.unwrap() } else if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
+            g.mic(t.mic.cx(), t.mic.cy(), t.mic.h * 0.56, icon);
+            self.paint_voice_status(t);
 
             // Rich input: a small text-box icon, the label, and its keys (dimmer).
             let hot = t.rich.contains(mx, my);

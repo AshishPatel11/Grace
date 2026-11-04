@@ -60,6 +60,8 @@ pub enum AppEvent {
     Clipboard(String),
     Stats(crate::procmon::Snapshot),
     Ipc(crate::ipc::Request),
+    /// The mic heard something (see voice.rs).
+    Voice(crate::voice::VoiceEvent),
 }
 
 #[derive(Clone, Copy)]

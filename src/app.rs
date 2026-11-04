@@ -159,7 +159,7 @@ pub struct App {
     pub active: usize,
     pub panes: HashMap<u64, Pane>,
     next_id: u64,
-    tx: Sender<AppEvent>,
+    pub(crate) tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
     targets: Arc<Mutex<Vec<(u64, u32)>>>,
     pub sys: SysMem,
@@ -191,6 +191,13 @@ pub struct App {
     pub chat_images: HashMap<String, crate::images::ChatImages>,
     /// Thumbnails that could not be loaded, and when we last tried (retry after a while).
     pub thumb_miss: HashMap<String, Instant>,
+    /// The mic is listening (see voice.rs).
+    pub voice: Option<crate::voice::Voice>,
+    pub voice_seq: u64,
+    /// The "offline engine, turn on online speech for better results" note was shown.
+    pub voice_note_shown: bool,
+    /// Test copy only: the mic listens to this .wav file (set by the pipe's "voice" command).
+    pub voice_test_wav: Option<String>,
 }
 
 fn key(vk: u16) -> bool {
@@ -234,6 +241,10 @@ impl App {
             perf: (0, 0, 0, 0),
             chat_images: HashMap::new(),
             thumb_miss: HashMap::new(),
+            voice: None,
+            voice_seq: 0,
+            voice_note_shown: false,
+            voice_test_wav: None,
         })
     }
 
@@ -1052,6 +1063,7 @@ impl App {
                     let out = self.on_ipc(&req.json);
                     let _ = req.reply.send(out.to_string());
                 }
+                AppEvent::Voice(ev) => self.on_voice(ev),
             }
         }
         self.update_title();
@@ -1322,9 +1334,31 @@ impl App {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 self.box_probe(f("x"), f("y"))
             }
+            // The mic: start or stop listening, read the state, or pretend it heard words.
+            // In the test copy {"wav": "C:/x.wav"} makes the mic listen to that file.
             "voice" => {
-                self.start_voice();
-                json!({"ok": true})
+                if let Some(w) = j.get("wav").and_then(|v| v.as_str()).filter(|_| crate::dev()) {
+                    self.voice_test_wav = Some(w.to_string()).filter(|w| !w.is_empty());
+                }
+                self.toggle_voice();
+                self.voice_state()
+            }
+            "voice_state" => self.voice_state(),
+            // Push to talk without a keyboard: {"down": true} = Right Alt down, false = up.
+            "voice_hold" => {
+                if let Some(w) = j.get("wav").and_then(|v| v.as_str()).filter(|_| crate::dev()) {
+                    self.voice_test_wav = Some(w.to_string()).filter(|w| !w.is_empty());
+                }
+                if j.get("down").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    self.voice_hold_down();
+                } else {
+                    self.voice_hold_up();
+                }
+                self.voice_state()
+            }
+            "voice_heard" => {
+                let text = j.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                json!({"ok": self.voice_fake_heard(&text)})
             }
             "scroll" => {
                 let s = match j.get("to").and_then(|v| v.as_str()) {
@@ -1444,6 +1478,9 @@ impl App {
             }
             return false;
         }
+        // A key pressed while Right Alt is held for talking: it is a shortcut (AltGr+E = é),
+        // so stop listening and type nothing.
+        self.voice_hold_cancel();
         // A picture opened big: ←/→ show the other pictures of its album, any other key
         // closes it (and does nothing else). (A key we use is not turned into a typed
         // letter, so nothing else reaches Claude.)
@@ -1451,6 +1488,11 @@ impl App {
             return true;
         }
         if self.close_modal() {
+            return true;
+        }
+        // Esc while the mic listens: stop listening (and nothing else, so Claude does
+        // not also get an Esc and stop its work).
+        if vk == VK_ESCAPE && self.stop_voice() {
             return true;
         }
 
@@ -1513,6 +1555,7 @@ impl App {
         if ctrl && shift && !alt {
             match vk {
                 0x49 => self.box_toggle(), // I
+                0x4D => self.toggle_voice(), // M: the mic
                 0x4F => self.pick_folder_for_claude(), // O
                 0x54 => {
                     let p = self.cfg.default_profile.clone();
@@ -1866,6 +1909,10 @@ impl App {
         // The test copy never has the keyboard; draw it as if it had, so screenshots show the caret.
         self.focused = on || crate::dev();
         self.blink_reset();
+        if !on {
+            // Right Alt held for talking, then Alt+Tab away: we will never see it come up.
+            self.voice_hold_up();
+        }
         if let Some(id) = self.focused_id() {
             self.focus_report(id, on);
         }

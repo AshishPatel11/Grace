@@ -21,6 +21,7 @@ mod theme;
 mod thumbs;
 mod blink;
 mod toolbar;
+mod voice;
 mod win;
 
 use std::cell::RefCell;
@@ -540,6 +541,11 @@ fn main() {
         });
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // Push to talk: Right Alt down starts the mic, up stops it and types the words.
+            // The key then goes on as usual (Alt alone does nothing else here).
+            if let Some(down) = voice::right_alt(msg.message, msg.wParam.0, msg.lParam.0) {
+                with_app(|a| if down { a.voice_hold_down() } else { a.voice_hold_up() });
+            }
             if msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN {
                 let vk = msg.wParam.0 as u16;
                 let is_alt_f4 = msg.message == WM_SYSKEYDOWN && vk == 0x73;

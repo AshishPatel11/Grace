@@ -28,7 +28,17 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   at once. Tested by pausing Claude: "hello world" (with two Backspaces) showed while Claude was
   frozen, and Claude's text matched exactly afterwards.
 - **Toolbar under every Claude tab** (like Warp's):
-  - **Mic**: opens Windows voice typing (the same as Win+H). The words go into Claude's input line.
+  - **Mic** (or Ctrl+Shift+M): PulseTerm listens and types what you say into Claude's input line
+    (or into Rich input when it is open). No Windows popup, nothing to click. The button turns red
+    and the words heard so far show next to it. Click it again, press Esc, or stay quiet for
+    10 seconds to stop.
+  - **Push to talk: hold Right Alt**, talk, let go. The words are typed when you let go. A quick tap
+    (under 0.3 s) types nothing, and Right Alt + another key (AltGr+E = é) still types that letter.
+  - Which speech engine: Windows' modern one when "Online speech recognition" is on (Settings >
+    Privacy & security > Speech; better results, your voice goes to Microsoft). Otherwise the old
+    offline one (SAPI): nothing leaves the PC, but it makes more mistakes and can turn room noise
+    into words. Tested with a spoken test file: "Please list all the files in this folder then show
+    me the biggest one" came out word for word, and the offline engine was ready 230 ms after the click.
   - **Rich input** (Ctrl+Shift+I): opens a Word-like typing box for that tab. Off by default.
     It edits like Word: click to put the cursor, drag / double-click / triple-click to select,
     Shift+arrows, Ctrl+arrows (word by word), Ctrl+Backspace, Ctrl+A, Ctrl+C / X / V, Ctrl+Z / Ctrl+Y,
@@ -104,6 +114,8 @@ about once a second just to show the git branch. PulseTerm only draws when somet
 | Ctrl+Shift+T | New tab (default profile = Claude) |
 | Ctrl+Shift+O | Open Claude in another folder (new tab) |
 | Ctrl+Shift+I | Open / close Rich input for this tab |
+| Ctrl+Shift+M | Mic: start / stop listening (Esc also stops) |
+| Hold Right Alt | Push to talk: listens while held, types the words when you let go |
 | Ctrl+Shift+Space, or the ⌄ next to + | New tab with another profile (PowerShell, Git Bash, cmd) |
 | Ctrl+Shift+W | Close pane (or tab) |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
@@ -175,6 +187,11 @@ right-click a tab > Reload settings.
 - `instant_typing` (default true): show typed letters before Claude draws them.
 - `thumbnails` (default true): small pictures at the right edge, click to open big.
 - `mouse_select` (default true): a drag selects text even when the program uses the mouse.
+- `voice_engine` (default "auto"): the mic. "auto" = the modern engine when Windows allows it, else
+  offline. Or "modern", "offline", or "win+h" (open Windows' voice typing panel, the old way).
+- `voice_language` (default ""): language for the modern engine, like "en-IN" or "en-US".
+  "" = Windows' speech language. (The offline engine uses the one installed: here en-GB.)
+- `voice_hold` (default true): hold Right Alt to talk.
 
 ## Testing a new build without touching the one you work in
 
@@ -183,6 +200,9 @@ its own pipe (`\\.\pipe\pulseterm-dev-<username>`) and its own settings folder
 (`%APPDATA%\PulseTerm-dev`). It opens behind other windows and never takes the keyboard.
 Extra pipe commands for tests: `{"cmd":"type","text":"..."}`, `{"cmd":"key","vk":13,"shift":true}`,
 `{"cmd":"box"}` (box text, caret, selection), `{"cmd":"boxhit","x":..,"y":..}`.
+Mic tests: `{"cmd":"voice","wav":"C:/say.wav"}` makes the mic listen to a .wav file (test copy
+only), `{"cmd":"voice_hold","down":true}` / `false` acts like Right Alt, `{"cmd":"voice_state"}`
+shows what it heard so far, `{"cmd":"voice_heard","text":"..."}` pretends it heard words.
 
 To update the installed copy while it is running: rename `pulseterm.exe` to `pulseterm.old.exe`
 (Windows allows renaming a running program), copy the new one in, and restart PulseTerm when convenient.
