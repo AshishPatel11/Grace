@@ -1,8 +1,8 @@
 //! Settings file and saved tabs.
 //!
-//! Settings live in `%APPDATA%\PulseTerm\config.toml`. The first run writes a
+//! Settings live in `%APPDATA%\Grace\config.toml`. The first run writes a
 //! commented default file, so the user can see every option.
-//! Open tabs are saved to `%APPDATA%\PulseTerm\session.json` when the window closes.
+//! Open tabs are saved to `%APPDATA%\Grace\session.json` when the window closes.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -145,9 +145,49 @@ impl Config {
 
 pub fn data_dir() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(base).join(if crate::dev() { "PulseTerm-dev" } else { "PulseTerm" });
+    let dir = PathBuf::from(base).join(if crate::dev() { "Grace-dev" } else { "Grace" });
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Grace was called PulseTerm before. On the first start after the rename, move the old
+/// folders to the new names, so settings, saved tabs, recent folders and the Whisper
+/// download carry over. The test copy (`--dev`) moves only its own folder.
+pub fn move_old_folders() {
+    let mut moves = vec![("APPDATA", "PulseTerm-dev", "Grace-dev")];
+    if !crate::dev() {
+        moves = vec![("APPDATA", "PulseTerm", "Grace"), ("LOCALAPPDATA", "PulseTerm", "Grace")];
+    }
+    for (var, old, new) in moves {
+        let Ok(base) = std::env::var(var) else { continue };
+        let (from, to) = (Path::new(&base).join(old), Path::new(&base).join(new));
+        if !from.is_dir() || to.exists() {
+            continue;
+        }
+        // A rename is instant. If something holds a file open, copy instead.
+        let how = if std::fs::rename(&from, &to).is_ok() {
+            "moved"
+        } else if copy_dir(&from, &to).is_ok() {
+            "copied"
+        } else {
+            "could not move"
+        };
+        crate::log(&format!("rename: {how} {} to {}", from.display(), to.display()));
+    }
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let dest = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &dest)?;
+        } else {
+            std::fs::copy(e.path(), dest)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn config_path() -> PathBuf {
@@ -172,7 +212,7 @@ pub fn load_config() -> Config {
 fn default_file_text(cfg: &Config) -> String {
     let body = toml::to_string_pretty(cfg).unwrap_or_default();
     format!(
-        "# PulseTerm settings. Save this file, then restart PulseTerm (or right-click a tab > Reload settings).\n\
+        "# Grace settings. Save this file, then restart Grace (or right-click a tab > Reload settings).\n\
          #\n\
          # font_size        : points. Ctrl+= / Ctrl+- also change it for this run.\n\
          # scrollback_lines : old lines kept per pane. More lines = more RAM.\n\

@@ -1,27 +1,32 @@
-# PulseTerm
+# Grace
 
 A light terminal for running Claude Code on Windows. Built because Warp was eating the PC.
+
+Named after the **Sites of Grace** in Elden Ring, where you rest, level up and find your way, and
+**Grace Hopper**, who wrote the first compiler and found the first computer bug. It was called
+PulseTerm before. On its first start, Grace moves PulseTerm's settings, saved tabs and Whisper
+download over by itself, and it still answers on PulseTerm's pipe, so ClaudeSnap keeps working.
 
 **Measured on this laptop (2026-11-03, idle):**
 
 | | RAM | CPU (one core) |
 |---|---|---|
 | Warp | 453 MB | 12.2% |
-| PulseTerm | 58 MB | 1.1% (cursor blinking, window focused) |
+| Grace | 58 MB | 1.1% (cursor blinking, window focused) |
 
 Why it is lighter: it starts no background processes. Warp starts a new PowerShell
-about once a second just to show the git branch. PulseTerm only draws when something changes.
+about once a second just to show the git branch. Grace only draws when something changes.
 
 ## Start it
 
-- Press the Windows key, type **PulseTerm**, press Enter.
-- Or run `%LOCALAPPDATA%\Programs\PulseTerm\pulseterm.exe`.
+- Press the Windows key, type **Grace**, press Enter.
+- Or run `%LOCALAPPDATA%\Programs\Grace\grace.exe`.
 - Starting it again opens a new tab in the same window (only one window).
 
 ## What it does
 
 - **Instant typing in Claude's own input line.** In a long chat Claude sometimes stalls before it
-  draws a typed letter (measured on a 93 MB chat: usually about 30 ms, but up to 671 ms). PulseTerm
+  draws a typed letter (measured on a 93 MB chat: usually about 30 ms, but up to 671 ms). Grace
   draws each letter at the cursor right away, and Claude's own drawing replaces it a moment later
   (same letter, same place, so you see no change). It only guesses plain letters, space and Backspace
   at the end of your text. Enter, arrows, Tab, Ctrl keys, paste and clicks show Claude's real screen
@@ -37,8 +42,8 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   - The speech engine is **Whisper**, an AI speech model that runs on this PC (whisper.cpp): good
     with noisy mics and accents, and your voice never leaves the PC. A small voice detector (Silero
     VAD) cuts out the parts with no speech, so room noise is not turned into words.
-  - **First start on a PC:** PulseTerm downloads what Whisper needs, about 160 MB, into
-    `%LOCALAPPDATA%\PulseTerm\whisper` (took 20 s here). Every file is checked against a fixed SHA-256
+  - **First start on a PC:** Grace downloads what Whisper needs, about 160 MB, into
+    `%LOCALAPPDATA%\Grace\whisper` (took 20 s here). Every file is checked against a fixed SHA-256
     fingerprint, the same ones GitHub and Hugging Face list, so a broken or changed download is never
     used. Pressing the mic during the download shows how far it is.
   - Measured on an Intel i5-12400F: 7 s of speech turned into text in 1.2 s ("Please list all the
@@ -62,13 +67,13 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   its menu also has your recent folders, "Show this folder in Explorer" and "Copy this folder's
   path"), the ⌄ menu next to +, or Ctrl+Shift+O (Windows' folder picker). The first time in a new
   folder Claude asks whether you trust it. Recent folders are kept in
-  `%APPDATA%\PulseTerm\recent_folders.json`.
+  `%APPDATA%\Grace\recent_folders.json`.
 - **Picture thumbnails.** Every line in a Claude tab that shows `[Image #3]` or an image file path
   gets a small picture at the right edge (about 3 text lines tall). Click it to see the picture big
   over the window; Esc or a click closes it. Pointing the mouse at the `[Image #3]` text itself also
   pops up a preview. Works for `.png .jpg .jpeg .gif .bmp .webp .ico .tif`. Claude keeps pasted
-  pictures inside the chat log; PulseTerm reads them from there. A picture you pasted but did not
-  send yet is not in the log, so PulseTerm keeps its own copy from the clipboard when you paste
+  pictures inside the chat log; Grace reads them from there. A picture you pasted but did not
+  send yet is not in the log, so Grace keeps its own copy from the clipboard when you paste
   (Ctrl+V or ClaudeSnap).
   - The thumbnails take no columns: they float on empty space at the right edge, so the terminal
     keeps its full width. They never cover text (the end of a `────` line is fine). If there is no
@@ -92,7 +97,7 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   The badge shows ↻ when a Claude is over 1 GB and idle for 10+ minutes.
 - **Bring in chats from Warp** (the ⌄ next to + > Bring in chats open in other windows). Every
   Claude chat open in another window becomes a sleeping tab here (0 MB) with its real title.
-  Close it in Warp, then press Enter here. If it is still open there, PulseTerm warns you first.
+  Close it in Warp, then press Enter here. If it is still open there, Grace warns you first.
 - **Zoom a pane** (Ctrl+Shift+Z): show one split pane full size; again to go back.
 - **Sleep a tab** (right-click the tab > Sleep tab). This stops Claude and frees all its RAM.
   The chat is kept. Press Enter in that tab to resume it (`claude --resume` runs for you).
@@ -102,8 +107,8 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   so it costs nothing.
 - **Alerts.** When Claude finishes or needs you in a tab you are not looking at, the taskbar
   flashes and Windows shows a popup. Click the popup to jump to that tab.
-- **Saved tabs.** Closing PulseTerm saves your tabs. Next start, they come back **asleep**
-  (0 MB) and wait for Enter, so starting PulseTerm never loads 5 big chats at once.
+- **Saved tabs.** Closing Grace saves your tabs. Next start, they come back **asleep**
+  (0 MB) and wait for Enter, so starting Grace never loads 5 big chats at once.
 - **Clickable paths and links.** Hold Ctrl and click a path like `C:\x\app.rs:42` or a URL.
   Files open in VS Code at that line (setting `editor`).
 - **Kill on close.** Closing a tab or pane stops everything started in it (Claude, node, servers).
@@ -142,18 +147,18 @@ about once a second just to show the git branch. PulseTerm only draws when somet
 | Middle-click a tab | Close it |
 
 **Selecting text inside Claude:** Claude Code (with `"tui": "fullscreen"`) uses the mouse itself.
-PulseTerm still selects on a drag and sends Claude only plain clicks and the wheel.
+Grace still selects on a drag and sends Claude only plain clicks and the wheel.
 Set `mouse_select = false` to give Claude every mouse event (then Shift+drag selects).
 
 ## Move your Warp chats over
 
 Easiest: the ⌄ next to + > **Bring in chats open in other windows**. Each chat arrives asleep.
-Close it in Warp, then press Enter in its PulseTerm tab.
+Close it in Warp, then press Enter in its Grace tab.
 
-Or by hand: each running chat has an id. Run this for each one (PulseTerm opens a tab and resumes it):
+Or by hand: each running chat has an id. Run this for each one (Grace opens a tab and resumes it):
 
 ```
-%LOCALAPPDATA%\Programs\PulseTerm\pulseterm.exe --resume <chat id>
+%LOCALAPPDATA%\Programs\Grace\grace.exe --resume <chat id>
 ```
 
 The ids of running chats are in `%USERPROFILE%\.claude\sessions\<pid>.json` (`sessionId`).
@@ -161,7 +166,7 @@ Close the Warp tab first, so the same chat is not open twice.
 
 ## Long chats and "virtual scroll"
 
-- PulseTerm's own history is virtual: it keeps at most `scrollback_lines` (10,000) and draws only
+- Grace's own history is virtual: it keeps at most `scrollback_lines` (10,000) and draws only
   the rows on screen, so a long session costs the same as a short one. Measured: 20,000 lines
   printed → exactly 10,000 kept, whole app 91 MB.
 - Rows are cached by their content, so text that scrolls up is not shaped again. Symbols and emoji
@@ -173,7 +178,7 @@ Close the Warp tab first, so the same chat is not open twice.
 
 ## Settings
 
-File: `%APPDATA%\PulseTerm\config.toml` (Ctrl+, opens it). Restart PulseTerm or use
+File: `%APPDATA%\Grace\config.toml` (Ctrl+, opens it). Restart Grace or use
 right-click a tab > Reload settings.
 
 - `font_family`, `font_size` (points)
@@ -205,27 +210,28 @@ right-click a tab > Reload settings.
 
 ## Testing a new build without touching the one you work in
 
-`pulseterm.exe --dev` starts a separate test copy: its own window ("PulseTerm (test copy)"),
-its own pipe (`\\.\pipe\pulseterm-dev-<username>`) and its own settings folder
-(`%APPDATA%\PulseTerm-dev`). It opens behind other windows and never takes the keyboard.
+`grace.exe --dev` starts a separate test copy: its own window ("Grace (test copy)"),
+its own pipe (`\\.\pipe\grace-dev-<username>`) and its own settings folder
+(`%APPDATA%\Grace-dev`). It opens behind other windows and never takes the keyboard.
 Extra pipe commands for tests: `{"cmd":"type","text":"..."}`, `{"cmd":"key","vk":13,"shift":true}`,
 `{"cmd":"box"}` (box text, caret, selection), `{"cmd":"boxhit","x":..,"y":..}`.
 Mic tests: `{"cmd":"voice","wav":"C:/say.wav"}` makes the mic listen to a .wav file (test copy
 only), `{"cmd":"voice_hold","down":true}` / `false` acts like Right Alt, `{"cmd":"voice_state"}`
 shows what it heard so far, `{"cmd":"voice_heard","text":"..."}` pretends it heard words.
 
-To update the installed copy while it is running: rename `pulseterm.exe` to `pulseterm.old.exe`
-(Windows allows renaming a running program), copy the new one in, and restart PulseTerm when convenient.
+To update the installed copy while it is running: rename `grace.exe` to `grace.old.exe`
+(Windows allows renaming a running program), copy the new one in, and restart Grace when convenient.
 
 ## ClaudeSnap
 
-`J:\Projects\claude-snap` now sends to PulseTerm first and falls back to Warp. With PulseTerm
-there are no fake key presses: it asks PulseTerm to paste into the tab directly, so reordering tabs
+`J:\Projects\claude-snap` now sends to Grace first and falls back to Warp. With Grace
+there are no fake key presses: it asks Grace to paste into the tab directly, so reordering tabs
 or holding a key cannot break it. ClaudeSnap must be rebuilt and restarted to get this.
 
 ## The local pipe (for scripts)
 
-`pulseterm.exe --send '<json>'` or write one JSON line to `\\.\pipe\pulseterm-<username>`:
+`grace.exe --send '<json>'` or write one JSON line to `\\.\pipe\grace-<username>`
+(the old name `\\.\pipe\pulseterm-<username>` works too):
 
 - `{"cmd":"list"}` - tabs with title, status, RAM, chat id
 - `{"cmd":"paste","tab":2,"text":"why?","image":true,"submit":false}`
@@ -252,12 +258,12 @@ or holding a key cannot break it. ClaudeSnap must be rebuilt and restarted to ge
   second it lists processes for the RAM numbers. It starts no processes.
 - Each tab's programs run inside a Windows "job". Closing the job stops all of them at once.
 - Build: `cargo build --release -j 4` (first build ~4 minutes). Then copy
-  `target\release\pulseterm.exe` to `%LOCALAPPDATA%\Programs\PulseTerm\`.
-- The app icon lives inside the exe (`build.rs` adds `assets/pulseterm.rc`). The build needs the
+  `target\release\grace.exe` to `%LOCALAPPDATA%\Programs\Grace\`.
+- The app icon lives inside the exe (`build.rs` adds `assets/grace.rc`). The build needs the
   Windows SDK's `rc.exe` (comes with the Visual Studio C++ build tools). To change the icon, edit
   and run `python assets/make_icon.py` (needs Pillow), then build again.
-- Log file: `%APPDATA%\PulseTerm\pulseterm.log`. A crash writes its reason and code lines there
-  (keep `pulseterm.pdb` next to the exe for line numbers).
+- Log file: `%APPDATA%\Grace\grace.log`. A crash writes its reason and code lines there
+  (keep `grace.pdb` next to the exe for line numbers).
 
 ## Known gaps (version 1)
 
@@ -267,5 +273,5 @@ or holding a key cannot break it. ClaudeSnap must be rebuilt and restarted to ge
   If symbols look wrong, set `fast_symbols = false`.
 - One unexplained exit happened during a 20,000-line flood test at 98% system RAM. It did not happen
   again in 3 repeats. The crash logger is now on, so a repeat will leave its reason in the log.
-- ClaudeSnap → PulseTerm compiles, but has not been tried end to end yet.
+- ClaudeSnap → Grace compiles, but has not been tried end to end yet.
 - The tabs sit under the normal Windows title bar (no custom title bar yet).

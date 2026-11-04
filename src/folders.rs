@@ -9,7 +9,7 @@
 //! - The ⌄ menu next to +.
 //! - Ctrl+Shift+O (Windows' folder picker).
 //!
-//! Recent folders are kept in `%APPDATA%\PulseTerm\recent_folders.json` (newest first).
+//! Recent folders are kept in `%APPDATA%\Grace\recent_folders.json` (newest first).
 
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,6 @@
-//! PulseTerm: a light terminal for Claude Code on Windows.
+//! Grace: a light terminal for Claude Code on Windows.
+//! (Named after the Sites of Grace in Elden Ring, where you rest and find your way, and
+//! Grace Hopper, who found the first computer bug. It was called PulseTerm before.)
 #![windows_subsystem = "windows"]
 
 mod app;
@@ -47,7 +49,7 @@ thread_local! {
 const TIMER_BLINK: usize = 1;
 
 /// `--dev`: a separate test copy with its own window, pipe and settings folder,
-/// so testing a new build never touches the PulseTerm you are working in.
+/// so testing a new build never touches the Grace you are working in.
 static DEV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn dev() -> bool {
@@ -55,11 +57,11 @@ pub fn dev() -> bool {
 }
 
 fn class() -> PCWSTR {
-    if dev() { w!("PulseTermDevWindow") } else { w!("PulseTermWindow") }
+    if dev() { w!("GraceDevWindow") } else { w!("GraceWindow") }
 }
 
 pub fn log(msg: &str) {
-    let path = config::data_dir().join("pulseterm.log");
+    let path = config::data_dir().join("grace.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{:?} {msg}", std::time::SystemTime::now());
     }
@@ -88,7 +90,7 @@ fn run_deferred(hwnd: HWND) {
                 with_app(|a| a.menu_command(ctx, cmd.0 as u32));
             },
             Deferred::Confirm { text, then } => {
-                let yes = win::confirm(hwnd, &text, "PulseTerm");
+                let yes = win::confirm(hwnd, &text, "Grace");
                 with_app(|a| a.after_confirm(then, yes));
             }
             Deferred::PickFolder { start } => {
@@ -334,7 +336,7 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
     }
 }
 
-/// If PulseTerm was started from inside a Claude Code session, these markers
+/// If Grace was started from inside a Claude Code session, these markers
 /// would make every Claude in our tabs think it is a sub-agent (no saved chat,
 /// no status file). Only session markers are removed, never user settings.
 /// The environment a program gets when started from the Start menu: only the user's and the
@@ -434,20 +436,21 @@ fn main() {
 {bt}"));
     }));
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--dev") || std::env::var_os("PULSETERM_DEV").is_some() {
+    // GRACE_DEV (or the old PULSETERM_DEV) also picks the test copy.
+    if args.iter().any(|a| a == "--dev") || std::env::var_os("GRACE_DEV").is_some() || std::env::var_os("PULSETERM_DEV").is_some() {
         DEV.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     strip_parent_session_env();
 
-    // `pulseterm --send '{"cmd":"list"}'` talks to the running window (for tests and scripts).
+    // `grace --send '{"cmd":"list"}'` talks to the running window (for tests and scripts).
     if args.len() >= 3 && args[1] == "--send" {
-        let out = ipc::send(&args[2]).unwrap_or_else(|| r#"{"ok":false,"error":"PulseTerm is not running"}"#.into());
+        let out = ipc::send(&args[2]).unwrap_or_else(|| r#"{"ok":false,"error":"Grace is not running"}"#.into());
         attach_console();
         println!("{out}");
         return;
     }
 
-    // `pulseterm --resume <chat id>` opens a tab that continues that Claude chat.
+    // `grace --resume <chat id>` opens a tab that continues that Claude chat.
     let resume = args.iter().position(|a| a == "--resume").and_then(|i| args.get(i + 1)).cloned();
 
     // Only one window: a second launch opens a new tab in the first one.
@@ -467,6 +470,9 @@ fn main() {
             return;
         }
     }
+
+    // First start after the rename from PulseTerm: carry the old folders over.
+    config::move_old_folders();
 
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -495,7 +501,7 @@ fn main() {
         let Ok(hwnd) = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class(),
-            w!("PulseTerm"),
+            w!("Grace"),
             WS_OVERLAPPEDWINDOW,
             x,
             y,
@@ -528,7 +534,7 @@ fn main() {
         let show = if saved.is_some_and(|s| s.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL };
         if dev() {
             // The test copy opens behind other windows and never takes the keyboard,
-            // so it cannot catch keys meant for the real PulseTerm.
+            // so it cannot catch keys meant for the real Grace.
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             let _ = SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         } else {

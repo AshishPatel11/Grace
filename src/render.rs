@@ -764,7 +764,7 @@ impl App {
             lines.push(format!("Free RAM: {:.1} GB of {:.1} GB", gb(self.sys.avail), gb(self.sys.total)));
             lines.push(format!("Committed: {:.1} of {:.1} GB (RAM + page file)", gb(self.sys.commit_used), gb(self.sys.commit_limit)));
             lines.push(format!("Programs in your tabs: {}", fmt_bytes(tabs)));
-            lines.push(format!("PulseTerm itself: {}", fmt_bytes(self.sys.self_mem)));
+            lines.push(format!("Grace itself: {}", fmt_bytes(self.sys.self_mem)));
         } else if let Some(i) = self.ui.tabs.iter().position(|t| t.badge.contains(mx, my) || t.rect.contains(mx, my)) {
             if !self.ui.tabs[i].badge.inset(-4.0).contains(mx, my) {
                 return;

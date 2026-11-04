@@ -197,6 +197,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grace"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "embed-resource",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml 0.8.23",
+ "windows",
+ "windows-numerics",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,21 +351,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pulse-term"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "embed-resource",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "toml 0.8.23",
- "windows",
- "windows-numerics",
 ]
 
 [[package]]

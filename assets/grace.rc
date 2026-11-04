@@ -1,7 +1,7 @@
-// Resources put inside pulseterm.exe by build.rs.
+// Resources put inside grace.exe by build.rs.
 // The icon: Explorer, the Start menu and the taskbar read it from the exe file.
 // (Made by assets/make_icon.py.)
-1 ICON "pulseterm.ico"
+1 ICON "grace.ico"
 
 // The name Task Manager and the file's Properties show.
 1 VERSIONINFO
@@ -14,11 +14,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "PulseTerm"
-      VALUE "ProductName", "PulseTerm"
+      VALUE "FileDescription", "Grace"
+      VALUE "ProductName", "Grace"
       VALUE "FileVersion", "0.1.0"
       VALUE "ProductVersion", "0.1.0"
-      VALUE "OriginalFilename", "pulseterm.exe"
+      VALUE "OriginalFilename", "grace.exe"
     END
   END
   BLOCK "VarFileInfo"

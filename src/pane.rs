@@ -232,9 +232,11 @@ pub fn spawn(a: SpawnArgs<'_>) -> std::io::Result<(Live, Arc<Mutex<Option<EventL
     // On Windows, Node programs (Claude Code too) only use colour and Unicode
     // symbols when they recognise the terminal. This is the name they look for.
     env.insert("TERM".to_string(), "xterm-256color".to_string());
-    env.insert("TERM_PROGRAM".to_string(), "PulseTerm".to_string());
+    env.insert("TERM_PROGRAM".to_string(), "Grace".to_string());
+    env.insert("GRACE_PANE".to_string(), a.pane.to_string());
+    // The old name, for scripts made before the rename.
     env.insert("PULSETERM_PANE".to_string(), a.pane.to_string());
-    // If PulseTerm was started from Warp, stop the Warp plugin from thinking it runs in Warp.
+    // If Grace was started from Warp, stop the Warp plugin from thinking it runs in Warp.
     env.insert("WARP_CLI_AGENT_PROTOCOL_VERSION".to_string(), String::new());
     env.insert("WARP_TERMINAL_SESSION_UUID".to_string(), String::new());
     let opts = tty::Options {

@@ -155,7 +155,7 @@ pub fn tray_add(hwnd: HWND, icon: HICON) {
         hIcon: icon,
         ..Default::default()
     };
-    copy_into(&mut nid.szTip, "PulseTerm");
+    copy_into(&mut nid.szTip, "Grace");
     unsafe {
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -217,14 +217,14 @@ pub fn dark_menus() {
     }
 }
 
-/// The app icon at `size` pixels: the one inside the exe (assets/pulseterm.ico, put there
+/// The app icon at `size` pixels: the one inside the exe (assets/grace.ico, put there
 /// by build.rs), so it is sharp at every size. Falls back to drawing it in code.
 pub fn app_icon(size: i32) -> HICON {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, IMAGE_ICON, LR_DEFAULTCOLOR};
     unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
-        // Resource id 1 (see assets/pulseterm.rc). MAKEINTRESOURCE(1) is the number as a pointer.
+        // Resource id 1 (see assets/grace.rc). MAKEINTRESOURCE(1) is the number as a pointer.
         if let Ok(h) = LoadImageW(Some(module.into()), PCWSTR(1 as *const u16), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) {
             if !h.is_invalid() {
                 return HICON(h.0);

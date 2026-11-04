@@ -4,7 +4,7 @@
 //! - `[Image #N]`: Claude Code stores every pasted picture inside the chat log
 //!   (`~/.claude/projects/<project>/<chat id>.jsonl`), in the same message as its
 //!   `[Image #N]` text, as base64. Numbers count up across the whole chat.
-//! - A picture pasted but not sent yet is not in the log. PulseTerm keeps its own copy
+//! - A picture pasted but not sent yet is not in the log. Grace keeps its own copy
 //!   from the clipboard at the moment you paste it (see `Pending`).
 //! - A file path like `C:\shots\a.png`: read from disk.
 

@@ -1,4 +1,4 @@
-"""Makes assets/pulseterm.ico: the app icon put inside pulseterm.exe (see build.rs).
+"""Makes assets/grace.ico: the app icon put inside grace.exe (see build.rs).
 
 Same picture as `make_icon` in src/win.rs: an orange rounded square with a white ">_".
 Each size is drawn on its own (not shrunk from a big one), so small sizes stay sharp.
@@ -45,7 +45,7 @@ def draw(n):
 
 
 def main():
-    out = Path(__file__).with_name("pulseterm.ico")
+    out = Path(__file__).with_name("grace.ico")
     imgs = [draw(n) for n in SIZES]
     big = imgs[-1]
     big.save(out, format="ICO", sizes=[(n, n) for n in SIZES], append_images=imgs[:-1])

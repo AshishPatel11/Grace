@@ -2,7 +2,7 @@
 //!
 //! Before, the mic pressed Win+H for you. That opened Windows' floating voice panel:
 //! you had to click inside it, and the words did not always reach the terminal. Now
-//! PulseTerm listens by itself, with Windows' own speech engines:
+//! Grace listens by itself, with Windows' own speech engines:
 //!
 //! 1. The modern engine (`Windows.Media.SpeechRecognition`). Good results, but Windows
 //!    allows it only when "Online speech recognition" is on (Settings > Privacy &
@@ -392,7 +392,7 @@ fn modern_problem(s: windows::Media::SpeechRecognition::SpeechRecognitionResultS
     use windows::Media::SpeechRecognition::SpeechRecognitionResultStatus as S;
     match s {
         S::Success | S::UserCanceled | S::TimeoutExceeded | S::PauseLimitExceeded => None,
-        S::MicrophoneUnavailable => Some("No microphone, or Windows does not let PulseTerm use it (Settings > Privacy & security > Microphone).".into()),
+        S::MicrophoneUnavailable => Some("No microphone, or Windows does not let Grace use it (Settings > Privacy & security > Microphone).".into()),
         S::NetworkFailure => Some("The modern speech engine needs the internet. Check the connection, or set voice_engine = \"offline\".".into()),
         S::AudioQualityFailure => Some("The mic sound was too quiet or too noisy to understand.".into()),
         other => Some(format!("Listening stopped (speech status {}).", other.0)),
@@ -612,7 +612,7 @@ fn whisper_listen(session: u64, model: &str, wav: Option<&str>, out: &Out, stop:
             (PathBuf::from(w), false)
         }
         None => {
-            let path = std::env::temp_dir().join(format!("pulseterm-voice-{}-{session}.wav", std::process::id()));
+            let path = std::env::temp_dir().join(format!("grace-voice-{}-{session}.wav", std::process::id()));
             let rec = format!("ptrec{session}");
             mci(&format!("open new type waveaudio alias {rec}"))?;
             let recorded = (|| {

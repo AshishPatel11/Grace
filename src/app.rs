@@ -637,7 +637,7 @@ impl App {
         }
     }
 
-    /// Open a new tab that resumes an existing chat (`pulseterm --resume <id>`).
+    /// Open a new tab that resumes an existing chat (`grace --resume <id>`).
     pub fn resume_chat(&mut self, session: &str, cwd: Option<String>) {
         let id = self.add_pane("Claude", cwd.or_else(|| self.cfg.profile("Claude").cwd));
         if let Some(p) = self.panes.get_mut(&id) {
@@ -976,7 +976,7 @@ impl App {
         if self.tabs.is_empty() {
             return;
         }
-        let name = if crate::dev() { "PulseTerm (test copy)" } else { "PulseTerm" };
+        let name = if crate::dev() { "Grace (test copy)" } else { "Grace" };
         let t = format!("{} — {name}", self.tab_title(self.active));
         if t != self.last_title {
             unsafe {
@@ -1203,7 +1203,7 @@ impl App {
                         (t.grid().history_size(), t.grid().display_offset())
                     })
                     .unwrap_or((0, 0));
-                let out = json!({"ok": true, "tabs": tabs, "pulseterm_mb": self.sys.self_mem / 1_048_576,
+                let out = json!({"ok": true, "tabs": tabs, "grace_mb": self.sys.self_mem / 1_048_576,
                        "frame_avg_ms": avg as f64 / 1000.0, "frame_max_ms": max as f64 / 1000.0,
                        "frames": self.frame_us.len(), "history_lines": hist, "scrolled_up": off,
                        "perf_ms": {"lock_wait": self.perf.0 as f64 / 1000.0, "copy": self.perf.1 as f64 / 1000.0,
@@ -2148,7 +2148,7 @@ impl App {
         let busy = (0..self.tabs.len()).filter(|i| self.tab_status(*i) == "busy").count();
         if busy > 0 {
             self.pending.push(Deferred::Confirm {
-                text: format!("Claude is still working in {busy} tab(s). Close PulseTerm anyway?"),
+                text: format!("Claude is still working in {busy} tab(s). Close Grace anyway?"),
                 then: Confirmed::CloseWindow,
             });
             return false;

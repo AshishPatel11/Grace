@@ -6,7 +6,7 @@
 //! room noise into words.
 //!
 //! What it needs is downloaded once, on first start, into
-//! `%LOCALAPPDATA%\PulseTerm\whisper` (about 160 MB):
+//! `%LOCALAPPDATA%\Grace\whisper` (about 160 MB):
 //! - the official whisper.cpp Windows build (`whisper-cli.exe` and its DLLs),
 //! - the English model (`ggml-base.en.bin`, or `small.en` with `voice_model`),
 //! - a small voice detector (Silero VAD) that cuts out the parts with no speech, so
@@ -83,9 +83,18 @@ pub fn model(name: &str) -> &'static Asset {
     }
 }
 
+/// `%LOCALAPPDATA%\Grace\whisper`. Until the first normal start after the rename moves
+/// it (config::move_old_folders), the download may still sit under the old name
+/// (PulseTerm): use it there rather than download it again.
 pub fn dir() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base).join("PulseTerm").join("whisper")
+    let base = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into()));
+    let new = base.join("Grace").join("whisper");
+    let old = base.join("PulseTerm").join("whisper");
+    if !new.exists() && old.exists() {
+        old
+    } else {
+        new
+    }
 }
 
 fn cli() -> PathBuf {
