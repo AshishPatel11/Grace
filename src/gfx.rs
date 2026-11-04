@@ -535,6 +535,20 @@ impl Gfx {
         }
     }
 
+    /// Draw a picture so it fills `r` edge to edge: the middle part is kept, the
+    /// sides (or top and bottom) that do not fit are cut off.
+    pub fn draw_picture_cover(&self, b: &ID2D1Bitmap, r: Rect) {
+        let Some(rt) = &self.rt else { return };
+        let s = unsafe { b.GetSize() };
+        if s.width <= 0.0 || s.height <= 0.0 || r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        let want = r.w / r.h;
+        let (sw, sh) = if s.width / s.height > want { (s.height * want, s.height) } else { (s.width, s.width / want) };
+        let src = D2D_RECT_F { left: (s.width - sw) / 2.0, top: (s.height - sh) / 2.0, right: (s.width + sw) / 2.0, bottom: (s.height + sh) / 2.0 };
+        unsafe { rt.DrawBitmap(b, Some(&d2r(r)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, Some(&src)) };
+    }
+
     pub fn clip(&self, r: Rect) {
         if let Some(rt) = &self.rt {
             unsafe { rt.PushAxisAlignedClip(&d2r(r), D2D1_ANTIALIAS_MODE_ALIASED) };

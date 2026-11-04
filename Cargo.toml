@@ -56,3 +56,6 @@ codegen-units = 4
 strip = false
 debug = "line-tables-only"
 panic = "abort"
+
+[build-dependencies]
+embed-resource = "3.0.12"

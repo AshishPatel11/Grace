@@ -98,18 +98,26 @@ impl Node {
 
     /// Put `new_id` next to `target`. Returns false if `target` is not in this tree.
     pub fn split(&mut self, target: u64, new_id: u64, vertical: bool) -> bool {
+        self.split_with(target, Node::Leaf(new_id), vertical)
+    }
+
+    /// Put a whole layout (another tab's panes) next to `target`: right of it when
+    /// `vertical`, below it otherwise. Returns false if `target` is not in this tree.
+    pub fn split_with(&mut self, target: u64, node: Node, vertical: bool) -> bool {
         match self {
             Node::Leaf(id) if *id == target => {
-                *self = Node::Split {
-                    vertical,
-                    ratio: 0.5,
-                    a: Box::new(Node::Leaf(target)),
-                    b: Box::new(Node::Leaf(new_id)),
-                };
+                *self = Node::Split { vertical, ratio: 0.5, a: Box::new(Node::Leaf(target)), b: Box::new(node) };
                 true
             }
             Node::Leaf(_) => false,
-            Node::Split { a, b, .. } => a.split(target, new_id, vertical) || b.split(target, new_id, vertical),
+            Node::Split { a, b, .. } => {
+                // Try `a` first without giving `node` away; only one side can hold `target`.
+                if a.leaves().contains(&target) {
+                    a.split_with(target, node, vertical)
+                } else {
+                    b.split_with(target, node, vertical)
+                }
+            }
         }
     }
 
@@ -184,4 +192,43 @@ pub fn neighbor(rects: &[(u64, Rect)], from: u64, dx: i32, dy: i32) -> Option<u6
         }
     }
     best.map(|(_, id)| id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn another_tab_joins_next_to_a_pane() {
+        // Tab A: panes 1 | 2. Tab B: panes 3 / 4. Put B right of pane 2.
+        let mut a = Node::Leaf(1);
+        a.split(1, 2, true);
+        let mut b = Node::Leaf(3);
+        b.split(3, 4, false);
+        assert!(a.split_with(2, b, true));
+        assert_eq!(a.leaves(), vec![1, 2, 3, 4]);
+        // Pane 2 and the B layout now share one split, B on the right.
+        match &a {
+            Node::Split { b: right, .. } => match &**right {
+                Node::Split { vertical, a: l, b: r, .. } => {
+                    assert!(*vertical);
+                    assert!(matches!(**l, Node::Leaf(2)));
+                    assert_eq!(r.leaves(), vec![3, 4]);
+                }
+                _ => panic!("pane 2 was not split"),
+            },
+            _ => panic!("root is not a split"),
+        }
+        // A pane that is not there: nothing changes.
+        assert!(!a.split_with(9, Node::Leaf(5), true));
+        assert_eq!(a.leaves(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_joined_pane_can_leave_again() {
+        let mut a = Node::Leaf(1);
+        a.split_with(1, Node::Leaf(2), false);
+        assert!(a.remove(2));
+        assert_eq!(a.leaves(), vec![1]);
+    }
 }

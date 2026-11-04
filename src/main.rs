@@ -19,6 +19,7 @@ mod procmon;
 mod render;
 mod theme;
 mod thumbs;
+mod blink;
 mod toolbar;
 mod win;
 
@@ -79,14 +80,7 @@ fn run_deferred(hwnd: HWND) {
         let Some(Some(d)) = with_app(|a| a.pending.pop()) else { return };
         match d {
             Deferred::Menu { items, x, y, ctx } => unsafe {
-                let Ok(menu) = CreatePopupMenu() else { continue };
-                for (id, label) in &items {
-                    if *id == 0 {
-                        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                    } else {
-                        let _ = AppendMenuW(menu, MF_STRING, *id as usize, &HSTRING::from(label.as_str()));
-                    }
-                }
+                let Some(menu) = build_menu(&items) else { continue };
                 let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, None, hwnd, None);
                 let _ = DestroyMenu(menu);
                 with_app(|a| a.menu_command(ctx, cmd.0 as u32));
@@ -153,13 +147,10 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             Some(0)
         }
         WM_TIMER if wp.0 == TIMER_BLINK => {
-            with_app(|a| {
-                // No blink repaint when the cursor is hidden (Claude draws its own).
-                if a.cfg.cursor_blink && a.focused && a.cursor_visible() {
-                    a.cursor_on = !a.cursor_on;
-                    a.invalidate();
-                }
-            });
+            // The blink's next step is due: draw again. Painting works out how the cursor
+            // looks from the clock (blink.rs) and sets the timer for the step after.
+            let _ = KillTimer(Some(hwnd), TIMER_BLINK);
+            with_app(|a| a.invalidate());
             Some(0)
         }
         WM_TIMER if wp.0 == 2 => {
@@ -190,8 +181,10 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             None
         }
         WM_SETFOCUS => {
-            with_app(|a| a.on_focus(true));
-            SetTimer(Some(hwnd), TIMER_BLINK, 530, None);
+            with_app(|a| {
+                a.on_focus(true);
+                a.invalidate();
+            });
             Some(0)
         }
         WM_KILLFOCUS => {
@@ -207,7 +200,7 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
                 _ => 2,
             };
             with_app(|a| {
-                a.cursor_on = true;
+                a.blink_reset();
                 a.on_mouse_down(x, y, b)
             });
             Some(0)
@@ -471,8 +464,8 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         win::dark_menus();
         let instance = GetModuleHandleW(None).unwrap_or_default();
-        let icon = win::make_icon(32);
-        let small = win::make_icon(16);
+        let icon = win::app_icon(GetSystemMetrics(SM_CXICON));
+        let small = win::app_icon(GetSystemMetrics(SM_CXSMICON));
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -545,8 +538,6 @@ fn main() {
                 None => a.restore_or_new(true),
             }
         });
-        SetTimer(Some(hwnd), TIMER_BLINK, 530, None);
-
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN {
@@ -572,5 +563,77 @@ fn attach_console() {
     }
     unsafe {
         AttachConsole(0xFFFF_FFFF);
+    }
+}
+
+/// Makes a Windows popup menu from (id, label) items. Id 0 is a separator line;
+/// `app::SUB_START` / `app::SUB_END` open and close a submenu named by SUB_START's label.
+fn build_menu(items: &[(u32, String)]) -> Option<HMENU> {
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        // `stack`: the menus being filled; the last one gets the next items.
+        // A submenu is added to its parent when it closes.
+        let mut stack: Vec<(HMENU, String)> = vec![(menu, String::new())];
+        for (id, label) in items {
+            let cur = stack.last().unwrap().0;
+            match *id {
+                0 => {
+                    let _ = AppendMenuW(cur, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+                app::SUB_START => {
+                    if let Ok(sub) = CreatePopupMenu() {
+                        stack.push((sub, label.clone()));
+                    }
+                }
+                app::SUB_END if stack.len() > 1 => {
+                    let (sub, name) = stack.pop().unwrap();
+                    let parent = stack.last().unwrap().0;
+                    let _ = AppendMenuW(parent, MF_POPUP, sub.0 as usize, &HSTRING::from(name.as_str()));
+                }
+                app::SUB_END => {}
+                _ => {
+                    let _ = AppendMenuW(cur, MF_STRING, *id as usize, &HSTRING::from(label.as_str()));
+                }
+            }
+        }
+        // A submenu left open by mistake is still shown.
+        while stack.len() > 1 {
+            let (sub, name) = stack.pop().unwrap();
+            let _ = AppendMenuW(stack.last().unwrap().0, MF_POPUP, sub.0 as usize, &HSTRING::from(name.as_str()));
+        }
+        Some(menu)
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn submenus_are_nested() {
+        let items = vec![
+            (1, "Rename".to_string()),
+            (app::SUB_START, "Split right with tab".to_string()),
+            (1001, "2  Claude".to_string()),
+            (1002, "3  PowerShell".to_string()),
+            (app::SUB_END, String::new()),
+            (0, String::new()),
+            (6, "Close".to_string()),
+        ];
+        unsafe {
+            let m = build_menu(&items).unwrap();
+            // Rename, the submenu, a separator, Close.
+            assert_eq!(GetMenuItemCount(Some(m)), 4);
+            let sub = GetSubMenu(m, 1);
+            assert!(!sub.is_invalid());
+            assert_eq!(GetMenuItemCount(Some(sub)), 2);
+            assert_eq!(GetMenuItemID(sub, 0), 1001);
+            assert_eq!(GetMenuItemID(sub, 1), 1002);
+            assert_eq!(GetMenuItemID(m, 3), 6);
+            let mut buf = [0u16; 64];
+            let n = GetMenuStringW(m, 1, Some(&mut buf), MF_BYPOSITION);
+            assert_eq!(String::from_utf16_lossy(&buf[..n as usize]), "Split right with tab");
+            let _ = DestroyMenu(m);
+        }
     }
 }

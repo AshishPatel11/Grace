@@ -104,15 +104,27 @@ pub struct Ui {
     pub preview: Option<crate::preview::Preview>,
     /// Toolbars (mic, Rich input) under Claude tabs in the active tab.
     pub tools: Vec<crate::toolbar::ToolHit>,
-    /// The strip at the right of a Claude pane where thumbnails go.
-    pub gutters: Vec<(u64, Rect)>,
+    /// Claude panes that show thumbnails (they float over the pane's right edge).
+    pub thumb_panes: Vec<u64>,
     /// Thumbnails drawn in the last frame (click one to open it big).
-    pub thumbs: Vec<(Rect, crate::preview::Preview)>,
+    pub thumbs: Vec<crate::thumbs::ThumbHit>,
+    /// The pictures of each album drawn in the last frame (`ThumbHit::album` points here).
+    pub albums: Vec<Vec<crate::preview::Preview>>,
     /// A picture opened big, over everything. Esc or a click closes it.
     pub modal: Option<crate::preview::Preview>,
+    /// The album the big picture belongs to: ←/→ move through it.
+    pub modal_album: Vec<crate::preview::Preview>,
     /// The recent folders shown in the last folder menu (menu id 200 + index).
     pub folder_menu: Vec<String>,
 }
+
+/// In a menu's items: `(SUB_START, "Label")` opens a submenu, `(SUB_END, "")` closes it.
+pub const SUB_START: u32 = u32::MAX;
+pub const SUB_END: u32 = u32::MAX - 1;
+/// Menu ids from here up pick a tab in "Split right with tab" (base + tab index);
+/// from `JOIN_DOWN` up, "Split down with tab".
+const JOIN_RIGHT: u32 = 1000;
+const JOIN_DOWN: u32 = 2000;
 
 pub enum Deferred {
     Menu { items: Vec<(u32, String)>, x: i32, y: i32, ctx: MenuCtx },
@@ -153,7 +165,17 @@ pub struct App {
     pub sys: SysMem,
     pub ui: Ui,
     pub focused: bool,
-    pub cursor_on: bool,
+    /// The cursor blink starts from here: it is reset when you type, click, or the
+    /// cursor moves, so the cursor stays solid while you work (see `cursor_alpha`).
+    pub blink_from: Instant,
+    /// Where the cursor was drawn last (pane, line, column), to notice it moving.
+    pub blink_at: Option<(u64, i32, usize)>,
+    /// Windows' cursor blink time in ms (Settings > Accessibility > Text cursor); 0 = no blink.
+    pub blink_ms: u32,
+    /// How long it keeps blinking after the last key or move (Windows' caret timeout).
+    pub blink_timeout: u64,
+    /// Set while painting when a blinking cursor or caret was drawn.
+    pub blink_needed: bool,
     pub pending: Vec<Deferred>,
     pub icon: HICON,
     high_surrogate: Option<u16>,
@@ -196,7 +218,11 @@ impl App {
             sys: SysMem::default(),
             ui: Ui::default(),
             focused: true,
-            cursor_on: true,
+            blink_from: Instant::now(),
+            blink_at: None,
+            blink_ms: crate::blink::system_blink_ms(),
+            blink_timeout: crate::blink::system_blink_timeout_ms(),
+            blink_needed: false,
             pending: Vec::new(),
             icon,
             high_surrogate: None,
@@ -426,6 +452,72 @@ impl App {
         self.relayout();
         self.start_pane(id, None, false);
         self.invalidate();
+    }
+
+    /// Moves every pane of tab `src` next to pane `target` (in another tab): right of it
+    /// when `vertical`, below it otherwise. Tab `src` goes away, but its programs keep
+    /// running (nothing restarts, chats are not touched).
+    pub fn join_tab(&mut self, src: usize, target: u64, vertical: bool) -> bool {
+        let Some(dst) = self.tab_of(target) else { return false };
+        if src == dst || src >= self.tabs.len() {
+            return false;
+        }
+        let moved = self.tabs.remove(src);
+        let dst = if dst > src { dst - 1 } else { dst };
+        let tab = &mut self.tabs[dst];
+        tab.root.split_with(target, moved.root, vertical);
+        tab.focus = moved.focus;
+        tab.zoom = None;
+        self.activate(dst);
+        true
+    }
+
+    /// Takes a pane out of a split and gives it its own tab (right after the old one).
+    /// Returns false when it is already alone in its tab.
+    pub fn detach_pane(&mut self, id: u64) -> bool {
+        let Some(ti) = self.tab_of(id) else { return false };
+        if !self.tabs[ti].root.remove(id) {
+            return false;
+        }
+        let tab = &mut self.tabs[ti];
+        if tab.focus == id {
+            tab.focus = tab.root.leaves()[0];
+        }
+        if tab.zoom == Some(id) {
+            tab.zoom = None;
+        }
+        let tid = self.id();
+        self.tabs.insert(ti + 1, Tab { id: tid, root: Node::Leaf(id), focus: id, custom_title: None, alert: Alert::None, zoom: None });
+        self.activate(ti + 1);
+        true
+    }
+
+    /// "Split right with tab ▸" and "Split down with tab ▸": every tab except `skip`.
+    fn join_menu_items(&self, skip: usize) -> Vec<(u32, String)> {
+        let others: Vec<usize> = (0..self.tabs.len()).filter(|i| *i != skip).collect();
+        if others.is_empty() {
+            return Vec::new();
+        }
+        let mut items = Vec::new();
+        for (label, base) in [("Split right with tab", JOIN_RIGHT), ("Split down with tab", JOIN_DOWN)] {
+            items.push((SUB_START, label.to_string()));
+            for i in &others {
+                // "&" would underline the next letter in a Windows menu.
+                items.push((base + *i as u32, format!("{}  {}", i + 1, self.tab_title(*i).replace('&', "&&"))));
+            }
+            items.push((SUB_END, String::new()));
+        }
+        items
+    }
+
+    /// A pick from `join_menu_items`: brings that tab next to pane `target`.
+    fn join_menu_pick(&mut self, cmd: u32, target: u64) -> bool {
+        let (src, vertical) = match cmd {
+            c if (JOIN_RIGHT..JOIN_DOWN).contains(&c) => (c - JOIN_RIGHT, true),
+            c if (JOIN_DOWN..JOIN_DOWN + 1000).contains(&c) => (c - JOIN_DOWN, false),
+            _ => return false,
+        };
+        self.join_tab(src as usize, target, vertical)
     }
 
     pub fn focused_id(&self) -> Option<u64> {
@@ -724,10 +816,10 @@ impl App {
             let mut term_rects = Vec::new();
             let mut boxes = Vec::new();
             let mut tools = Vec::new();
-            let mut gutters = Vec::new();
+            let mut thumb_panes = Vec::new();
             for (id, r) in rects {
                 // A Claude pane gets, from the bottom up: the toolbar, the typing box (when
-                // open), and the terminal. Thumbnails get a strip at the terminal's right.
+                // open), and the terminal. Thumbnails float over the terminal's right edge.
                 let mut tr = r;
                 let bar = self.toolbar_wanted(id);
                 if bar {
@@ -750,12 +842,10 @@ impl App {
                 } else if let Some(p) = self.panes.get_mut(&id) {
                     p.compose.shown = false;
                 }
-                // Thumbnail strip: only for Claude, and only when the pane is wide enough
-                // that losing a few columns does not hurt.
-                let gw = self.thumb_gutter_w();
-                if bar && self.cfg.thumbnails && tr.w - gw > 90.0 * cw {
-                    gutters.push((id, Rect::new(tr.right() - gw, tr.y, gw, tr.h)));
-                    tr = Rect::new(tr.x, tr.y, tr.w - gw, tr.h);
+                // Thumbnails: only for Claude. They take no columns (they are drawn on
+                // empty space), so the terminal keeps its full width.
+                if bar && self.cfg.thumbnails && tr.w > 60.0 * cw {
+                    thumb_panes.push(id);
                 }
                 if let Some(p) = self.panes.get_mut(&id) {
                     let cols = (((tr.w - 2.0 * px) / cw).floor() as usize).max(2);
@@ -776,7 +866,7 @@ impl App {
                 self.ui.dividers = divs;
                 self.ui.boxes = boxes;
                 self.ui.tools = tools;
-                self.ui.gutters = gutters;
+                self.ui.thumb_panes = thumb_panes;
             }
         }
         self.layout_bar();
@@ -932,16 +1022,6 @@ impl App {
         let gb = |b: u64| (b as f64 / 1.073_741_824e8).round() as u64;
         s.push_str(&format!("{}/{}", gb(self.sys.total - self.sys.avail), gb(self.sys.total)));
         s
-    }
-
-    pub fn cursor_visible(&self) -> bool {
-        if self.box_takes_keys().is_some() {
-            return true;
-        }
-        self.focused_pane().and_then(|p| p.live.as_ref()).is_some_and(|l| {
-            let t = l.term.lock();
-            t.mode().contains(TermMode::SHOW_CURSOR) && t.grid().display_offset() == 0
-        })
     }
 
     pub fn drain(&mut self) {
@@ -1202,9 +1282,10 @@ impl App {
             // Thumbnails on screen, the open picture, and the toolbar (for tests).
             "thumbs" => json!({
                 "ok": true,
-                "thumbs": self.ui.thumbs.iter().map(|(r, p)| json!({"rect": [r.x, r.y, r.w, r.h], "title": p.title})).collect::<Vec<_>>(),
+                "thumbs": self.ui.thumbs.iter().map(|t| json!({"rect": [t.rect.x, t.rect.y, t.rect.w, t.rect.h], "title": t.pv.title, "album": t.album})).collect::<Vec<_>>(),
+                "albums": self.ui.albums.iter().map(|a| a.len()).collect::<Vec<_>>(),
                 "modal": self.ui.modal.as_ref().map(|p| p.title.clone()),
-                "gutters": self.ui.gutters.iter().map(|(_, r)| [r.x, r.y, r.w, r.h]).collect::<Vec<_>>(),
+                "modal_album": self.ui.modal_album.len(),
                 "tools": self.ui.tools.iter().map(|t| json!({"mic": [t.mic.x, t.mic.y, t.mic.w, t.mic.h], "rich": [t.rich.x, t.rich.y, t.rich.w, t.rich.h],
                     "folder": [t.folder.x, t.folder.y, t.folder.w, t.folder.h], "folder_path": self.pane_folder(t.id)})).collect::<Vec<_>>(),
             }),
@@ -1214,6 +1295,28 @@ impl App {
                 self.on_mouse_move(f("x"), f("y"));
                 self.invalidate();
                 json!({"ok": true, "preview": self.ui.preview.as_ref().map(|p| p.title.clone())})
+            }
+            // Bring tab `tab` next to the focused pane of tab `into` (default: the active tab).
+            // {"cmd":"join","tab":3,"into":1,"vertical":true}
+            "join" => {
+                let src = j.get("tab").and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(0).wrapping_sub(1);
+                let into = j.get("into").and_then(|v| v.as_u64()).map(|n| (n as usize).wrapping_sub(1)).unwrap_or(self.active);
+                let vertical = j.get("vertical").and_then(|v| v.as_bool()).unwrap_or(true);
+                let ok = self.tabs.get(into).map(|t| t.focus).is_some_and(|target| self.join_tab(src, target, vertical));
+                json!({"ok": ok, "tabs": self.tabs.len()})
+            }
+            // The focused pane of tab `tab` (default: active) gets its own tab.
+            "detach" => {
+                let ok = self.tab_arg(j).and_then(|i| self.tabs.get(i)).map(|t| t.focus).is_some_and(|id| self.detach_pane(id));
+                json!({"ok": ok, "tabs": self.tabs.len()})
+            }
+            // A left click at a point (tests), and what is open big afterwards.
+            "click" => {
+                let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                self.on_mouse_down(f("x"), f("y"), 0);
+                self.on_mouse_up(f("x"), f("y"), 0);
+                self.invalidate();
+                json!({"ok": true, "modal": self.ui.modal.as_ref().map(|p| p.title.clone()), "modal_album": self.ui.modal_album.len()})
             }
             "boxhit" => {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -1341,8 +1444,12 @@ impl App {
             }
             return false;
         }
-        // A picture opened big: any key closes it (and does nothing else).
-        // (A key we use is not turned into a typed letter, so nothing else reaches Claude.)
+        // A picture opened big: ←/→ show the other pictures of its album, any other key
+        // closes it (and does nothing else). (A key we use is not turned into a typed
+        // letter, so nothing else reaches Claude.)
+        if (vk == VK_LEFT || vk == VK_RIGHT) && self.modal_step(if vk == VK_RIGHT { 1 } else { -1 }) {
+            return true;
+        }
         if self.close_modal() {
             return true;
         }
@@ -1758,7 +1865,7 @@ impl App {
     pub fn on_focus(&mut self, on: bool) {
         // The test copy never has the keyboard; draw it as if it had, so screenshots show the caret.
         self.focused = on || crate::dev();
-        self.cursor_on = true;
+        self.blink_reset();
         if let Some(id) = self.focused_id() {
             self.focus_report(id, on);
         }
@@ -1817,6 +1924,14 @@ impl App {
                     let name = p.name.clone();
                     self.new_tab(&name, None);
                 }
+            }
+            MenuCtx::Tab(i) if cmd >= JOIN_RIGHT => {
+                if let Some(target) = self.tabs.get(i).map(|t| t.focus) {
+                    self.join_menu_pick(cmd, target);
+                }
+            }
+            MenuCtx::Pane(id) if cmd >= JOIN_RIGHT => {
+                self.join_menu_pick(cmd, id);
             }
             MenuCtx::Tab(i) => match cmd {
                 1 => self.start_rename(i),
@@ -1892,6 +2007,9 @@ impl App {
                     self.invalidate();
                 }
                 7 => self.close_pane(id, true),
+                8 => {
+                    self.detach_pane(id);
+                }
                 _ => {}
             },
         }
@@ -1904,8 +2022,9 @@ impl App {
             (2, "Duplicate tab".into()),
             (3, "Split right\tCtrl+Shift+D".into()),
             (4, "Split down\tCtrl+Shift+E".into()),
-            (0, String::new()),
         ];
+        items.extend(self.join_menu_items(i));
+        items.push((0, String::new()));
         if self.tabs[i].root.leaves().iter().any(|id| self.panes.get(id).is_some_and(|p| p.stats.claude.is_some())) {
             let gain = procmon::fmt_bytes(self.refresh_gain(i));
             items.push((10, format!("Refresh chat: restart Claude, keep the chat (frees about {gain})")));
@@ -1924,17 +2043,25 @@ impl App {
     }
 
     pub fn pane_menu(&mut self, id: u64, x: i32, y: i32) {
-        let items = vec![
+        let mut items = vec![
             (1, "Copy\tCtrl+C".to_string()),
             (2, "Paste\tCtrl+V".into()),
             (0, String::new()),
             (3, "Split right\tCtrl+Shift+D".into()),
             (4, "Split down\tCtrl+Shift+E".into()),
+        ];
+        let ti = self.tab_of(id).unwrap_or(self.active);
+        items.extend(self.join_menu_items(ti));
+        if self.tabs.get(ti).is_some_and(|t| t.root.leaves().len() > 1) {
+            items.push((8, "Move pane to its own tab".into()));
+        }
+        items.extend([
+            (0, String::new()),
             (5, "Find\tCtrl+Shift+F".into()),
             (6, "Select all".into()),
             (0, String::new()),
             (7, "Close pane\tCtrl+Shift+W".into()),
-        ];
+        ]);
         self.pending.push(Deferred::Menu { items, x, y, ctx: MenuCtx::Pane(id) });
     }
 
@@ -2086,8 +2213,9 @@ impl App {
             return;
         }
         if button == 0 {
-            if let Some(pv) = self.thumb_at(x, y) {
-                self.open_modal(pv);
+            if let Some(t) = self.thumb_hit(x, y) {
+                let album = self.ui.albums.get(t.album).cloned().unwrap_or_default();
+                self.open_modal(t.pv, album);
                 return;
             }
         }

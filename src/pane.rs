@@ -296,7 +296,7 @@ pub struct Pane {
     /// Letters drawn before Claude drew them (see `predict.rs`).
     pub predict: crate::predict::Predict,
     /// Which pictures each screen row points to, by the row's content hash (thumbnails).
-    pub thumb_rows: std::collections::HashMap<u64, Vec<crate::thumbs::ThumbRef>>,
+    pub thumb_rows: std::collections::HashMap<u64, crate::thumbs::RowPics>,
 }
 
 impl Pane {

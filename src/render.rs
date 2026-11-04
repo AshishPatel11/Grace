@@ -275,6 +275,8 @@ impl App {
         self.ui.jump.clear();
         self.ui.cards.clear();
         self.ui.thumbs.clear();
+        self.ui.albums.clear();
+        self.blink_needed = false;
         let panes = self.ui.panes.clone();
         let multi = panes.len() > 1;
         let focus = self.focused_id();
@@ -284,13 +286,12 @@ impl App {
             if multi && Some(*id) != focus {
                 self.gfx.fill_a(*r, BG, 0.28);
             }
-            self.gfx.unclip();
-            if let Some((_, gr)) = self.ui.gutters.iter().find(|(g, _)| g == id).copied() {
-                self.gfx.clip(gr);
-                let oy = self.text_origin(*r).1;
-                self.paint_thumbs(*id, gr, oy, pics);
-                self.gfx.unclip();
+            // Thumbnails float over the pane's right edge, on empty space only.
+            if let Some(pics) = pics {
+                let (ox, oy) = self.text_origin(*r);
+                self.paint_thumbs(*id, *r, ox, oy, pics);
             }
+            self.gfx.unclip();
         }
         self.paint_boxes();
         self.paint_toolbars();
@@ -309,6 +310,7 @@ impl App {
         self.paint_preview();
         self.paint_toast();
         self.paint_modal();
+        self.schedule_blink();
         self.frame_us.push_back(t0.elapsed().as_micros() as u64);
         if self.frame_us.len() > 120 {
             self.frame_us.pop_front();
@@ -319,21 +321,22 @@ impl App {
         }
     }
 
-    /// Draws one pane. Returns the rows that point to a picture (for thumbnails).
-    fn paint_pane(&mut self, id: u64, r: Rect, focused: bool) -> Vec<(usize, crate::thumbs::ThumbRef)> {
+    /// Draws one pane. Returns what each screen row means for thumbnails (only for panes
+    /// that show them).
+    fn paint_pane(&mut self, id: u64, r: Rect, focused: bool) -> Option<crate::thumbs::ScreenPics> {
         let (ox, oy) = self.text_origin(r);
-        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        let p = self.panes.get(&id)?;
         if let Some(d) = &p.dormant {
             let d = d.clone();
             let cwd = p.cwd.clone().unwrap_or_default();
             let title = p.display_title();
             self.paint_card(id, r, &d, &cwd, &title);
-            return Vec::new();
+            return None;
         }
-        let Some(live) = &p.live else { return Vec::new() };
+        let live = p.live.as_ref()?;
         let term = live.term.clone();
         let pcols = p.cols.max(1);
-        let want_thumbs = self.ui.gutters.iter().any(|(g, _)| *g == id);
+        let want_thumbs = self.ui.thumb_panes.contains(&id);
 
         // Letters we drew before Claude did: drop the ones Claude has drawn by now.
         let (guesses, guess_cursor) = {
@@ -407,21 +410,26 @@ impl App {
         let cols = snap.cols;
         let fast = self.cfg.fast_symbols;
         let p = self.panes.get_mut(&id).unwrap();
-        let mut pics = Vec::new();
+        let mut pics = None;
         if want_thumbs {
             let cwd = p.stats.claude.as_ref().map(|c| c.cwd.clone()).filter(|c| !c.is_empty()).or_else(|| p.cwd.clone());
             if p.thumb_rows.len() > 3000 {
                 p.thumb_rows.clear();
             }
-            for (row, (hash, _, cells)) in snap.rows.iter().enumerate() {
-                let refs = p.thumb_rows.entry(*hash).or_insert_with(|| {
+            let mut rows = Vec::with_capacity(snap.rows.len());
+            for (hash, _, cells) in &snap.rows {
+                let info = p.thumb_rows.entry(*hash).or_insert_with(|| {
                     let text: String = cells.iter().map(|c| c.c).collect();
-                    crate::thumbs::scan_row(&text, cwd.as_deref())
+                    // Just after the last visible character (a wide one takes two columns).
+                    let end = cells
+                        .iter()
+                        .rposition(|c| !crate::thumbs::is_free(c.c) || c.flags.contains(Flags::WIDE_CHAR_SPACER))
+                        .map_or(0, |i| i + 1 + cells[i].flags.contains(Flags::WIDE_CHAR) as usize);
+                    crate::thumbs::RowPics { refs: crate::thumbs::scan_row(&text, cwd.as_deref()), end }
                 });
-                if let Some(first) = refs.first() {
-                    pics.push((row, first.clone()));
-                }
+                rows.push(info.clone());
             }
+            pics = Some(crate::thumbs::ScreenPics { cols, rows });
         }
         for (row, (hash, line, cells)) in snap.rows.iter().enumerate() {
             let y = oy + row as f32 * ch;
@@ -500,25 +508,42 @@ impl App {
         }
         let crow = cursor.point.line.0 + off;
         let boxed = self.box_takes_keys() == Some(id);
-        if !boxed && cursor.shape != CursorShape::Hidden && crow >= 0 && (crow as usize) < lines && (self.cursor_on || !focused) {
+        if !boxed && cursor.shape != CursorShape::Hidden && crow >= 0 && (crow as usize) < lines {
             let x = ox + cursor.point.column.0 as f32 * cw;
             let y = oy + crow as f32 * ch;
             let wide = if snap.cursor_wide && guessed.is_none() { 2.0 } else { 1.0 };
             let cr = Rect::new(x, y, cw * wide, ch);
             let thin = (2.0 * g.scale).round().max(1.0);
-            match (cursor.shape, focused && self.focused) {
+            let live = focused && self.focused;
+            // The cursor blinks only where you type. A move (Claude redraws, you type)
+            // starts the blink again, so it stays solid while things happen.
+            let a = if live {
+                let at = (id, cursor.point.line.0, cursor.point.column.0);
+                if self.blink_at != Some(at) {
+                    self.blink_at = Some(at);
+                    self.blink_from = std::time::Instant::now();
+                }
+                self.blink_needed = true;
+                self.cursor_alpha()
+            } else {
+                1.0
+            };
+            match (cursor.shape, live) {
+                (_, true) if a <= 0.0 => {}
                 (CursorShape::Block, true) => {
-                    g.fill(cr, CURSOR);
+                    g.fill_a(cr, CURSOR, a);
                     let c = if guessed.is_some() { ' ' } else { snap.cursor_char };
                     if c != ' ' && !is_box(c) {
+                        // The letter under the block turns from its own colour to the background.
+                        let fg = snap.rows.get(crow as usize).and_then(|(_, _, cells)| cells.get(cursor.point.column.0)).map_or(FG, |c| c.fg);
                         let s = wstr(&c.to_string());
                         if let Some(l) = g.make_layout(&s, 0, false, false) {
-                            g.draw_layout(&l, x, y, BG);
+                            g.draw_layout(&l, x, y, fg.mix(BG, a));
                         }
                     }
                 }
-                (CursorShape::Beam, true) => g.fill(Rect::new(x, y, thin, ch), CURSOR),
-                (CursorShape::Underline, true) => g.fill(Rect::new(x, y + ch - thin, cw * wide, thin), CURSOR),
+                (CursorShape::Beam, true) => g.fill_a(Rect::new(x, y, thin, ch), CURSOR, a),
+                (CursorShape::Underline, true) => g.fill_a(Rect::new(x, y + ch - thin, cw * wide, thin), CURSOR, a),
                 _ => g.outline(cr, 0.0, CURSOR.mix(BG, 0.3), 1.0),
             }
         }

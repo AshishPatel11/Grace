@@ -45,18 +45,28 @@ about once a second just to show the git branch. PulseTerm only draws when somet
   its menu also has your recent folders, "Show this folder in Explorer" and "Copy this folder's
   path"), the ⌄ menu next to +, or Ctrl+Shift+O (Windows' folder picker). The first time in a new
   folder Claude asks whether you trust it. Recent folders are kept in
-  `%APPDATA%\PulseTermecent_folders.json`.
+  `%APPDATA%\PulseTerm\recent_folders.json`.
 - **Picture thumbnails.** Every line in a Claude tab that shows `[Image #3]` or an image file path
   gets a small picture at the right edge (about 3 text lines tall). Click it to see the picture big
   over the window; Esc or a click closes it. Pointing the mouse at the `[Image #3]` text itself also
   pops up a preview. Works for `.png .jpg .jpeg .gif .bmp .webp .ico .tif`. Claude keeps pasted
   pictures inside the chat log; PulseTerm reads them from there. A picture you pasted but did not
   send yet is not in the log, so PulseTerm keeps its own copy from the clipboard when you paste
-  (Ctrl+V or ClaudeSnap). The thumbnail strip takes about 10 columns, and only in panes wider than
-  about 100 columns. Paths with spaces, and paths split over two lines, are not detected yet.
+  (Ctrl+V or ClaudeSnap).
+  - The thumbnails take no columns: they float on empty space at the right edge, so the terminal
+    keeps its full width. They never cover text (the end of a `────` line is fine). If there is no
+    empty space within a few lines, that thumbnail is not drawn; hovering the text still works.
+  - **Albums.** Pictures on lines close together (a list of paths, one empty line between is OK)
+    become one card: 2 side by side, 3 as one wide + two small, 4 or more as a 2×2 grid where the
+    last tile says "+N". Click a tile to open it big, then ← / → to see the others.
+  - Paths with spaces, and paths split over two lines, are not detected yet.
 - **Select text with a normal drag**, even inside Claude's full-screen view. A click without
   dragging still goes to Claude. Double-click = word, triple-click = line. Ctrl+C copies.
 - **Tabs and split panes.** Drag tabs to reorder. Drag the line between panes to resize.
+  - **Split with an existing tab:** right-click a tab (or inside a pane) > Split right with tab ▸ /
+    Split down with tab ▸ > pick the tab. That tab's panes move in next to it. Nothing restarts:
+    Claude keeps working and the chat is not touched.
+  - **Move pane to its own tab** (right-click inside a pane) undoes it.
 - **RAM on every tab.** Amber above 1 GB, red above 2 GB. Hover the number to see which programs use it.
   The top-right meter shows the whole PC's RAM. Hover it for details.
 - **Refresh chat** (right-click the tab, or click its RAM badge when it shows ↻). Claude restarts
@@ -155,6 +165,10 @@ right-click a tab > Reload settings.
 - `fallback_shell`: when a Claude-only tab's chat ends, this shell starts in the same folder.
 - `ram_warn_mb` (default 1024), `editor` (default `code`), `copy_on_select`, `cursor_blink`,
   `confirm_multiline_paste`, `restore_tabs`, `notify_popup`.
+- `cursor_blink` (default true): the cursor blinks at Windows' speed (Settings > Accessibility >
+  Text cursor) with soft fades. It stays solid while you type or while it moves, and stops blinking
+  after Windows' caret timeout (5 seconds) without typing, like Notepad. Measured: blinking costs
+  0.8-2% of one core while it fades, 0.16% once it stops. `false` = never blink.
 - `fast_symbols` (default true): the symbol/emoji picture cache. Set false if symbols look wrong.
 - `input_box` (default false): open the Rich input box under Claude tabs from the start.
 - `toolbar` (default true): the bar with the mic and Rich input buttons under Claude tabs.
@@ -191,6 +205,8 @@ or holding a key cannot break it. ClaudeSnap must be rebuilt and restarted to ge
 - `{"cmd":"focus","tab":2}`, `{"cmd":"split","tab":2,"vertical":true}`,
   `{"cmd":"sleep","tab":2}`, `{"cmd":"resume","tab":2}`, `{"cmd":"refresh","tab":2}`, `{"cmd":"close_tab","tab":2}`
 - `{"cmd":"import"}`, `{"cmd":"zoom"}`, `{"cmd":"selection"}`, `{"cmd":"scroll","to":"top"}`
+- `{"cmd":"join","tab":3,"into":1,"vertical":true}` - tab 3 moves next to tab 1's focused pane
+  (`vertical: false` = below). `{"cmd":"detach","tab":1}` - tab 1's focused pane gets its own tab.
 - `list` also returns speed numbers: `frame_avg_ms`, `frame_max_ms`, `perf_ms` (lock wait, copy, draw)
 
 `tab` is 1-based. Leave it out for the active tab.
@@ -207,6 +223,9 @@ or holding a key cannot break it. ClaudeSnap must be rebuilt and restarted to ge
 - Each tab's programs run inside a Windows "job". Closing the job stops all of them at once.
 - Build: `cargo build --release -j 4` (first build ~4 minutes). Then copy
   `target\release\pulseterm.exe` to `%LOCALAPPDATA%\Programs\PulseTerm\`.
+- The app icon lives inside the exe (`build.rs` adds `assets/pulseterm.rc`). The build needs the
+  Windows SDK's `rc.exe` (comes with the Visual Studio C++ build tools). To change the icon, edit
+  and run `python assets/make_icon.py` (needs Pillow), then build again.
 - Log file: `%APPDATA%\PulseTerm\pulseterm.log`. A crash writes its reason and code lines there
   (keep `pulseterm.pdb` next to the exe for line numbers).
 

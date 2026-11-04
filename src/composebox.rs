@@ -191,7 +191,7 @@ impl App {
                 self.relayout();
             }
         }
-        self.cursor_on = true;
+        self.blink_reset();
         self.invalidate();
     }
 
@@ -514,7 +514,7 @@ impl App {
         unsafe {
             SetCapture(self.hwnd);
         }
-        self.cursor_on = true;
+        self.blink_reset();
         self.invalidate();
         true
     }
@@ -606,9 +606,13 @@ impl App {
             } else {
                 g.draw_layout(&l, ox, oy, if asking || passthrough { TEXT_DIM } else { FG });
             }
-            if active && self.cursor_on {
-                let thin = (2.0 * g.scale).round().max(1.0);
-                g.fill(Rect::new((ox + cx).round(), (oy + cy).round(), thin, ch), CURSOR);
+            if active {
+                self.blink_needed = true;
+                let a = self.cursor_alpha();
+                if a > 0.0 {
+                    let thin = (2.0 * g.scale).round().max(1.0);
+                    g.fill_a(Rect::new((ox + cx).round(), (oy + cy).round(), thin, ch), CURSOR, a);
+                }
             }
             g.unclip();
 

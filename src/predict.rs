@@ -258,7 +258,7 @@ impl App {
                 p.predict.guesses.retain(|x| !(x.line == line && x.col == col && x.erase));
                 p.predict.guesses.push(g);
                 p.predict.cursor = Some((line, col + 1));
-                self.cursor_on = true;
+                self.blink_reset();
                 self.invalidate();
             }
             None => p.predict.resync = true,
