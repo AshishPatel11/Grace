@@ -85,10 +85,22 @@ pub fn set_clipboard_text(hwnd: HWND, text: &str) {
     }
 }
 
+/// Open a link, file or folder with its usual app.
+///
+/// Runs on its own short thread: Windows can take a second to start the browser, and
+/// while it waits it can run its own message loop. On the window's thread that blocked
+/// the screen and could swallow Grace's "new output" message (see `drain_or_retry`).
 pub fn shell_open(target: &str) {
-    unsafe {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+    let target = target.to_string();
+    let _ = std::thread::Builder::new().name("shell-open".into()).spawn(move || unsafe {
+        // Microsoft's advice for ShellExecute: COM set up on the calling thread.
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
         ShellExecuteW(None, w!("open"), &HSTRING::from(target), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
-    }
+        if com {
+            CoUninitialize();
+        }
+    });
 }
 
 pub fn flash(hwnd: HWND) {

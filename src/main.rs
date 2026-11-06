@@ -47,6 +47,8 @@ thread_local! {
 }
 
 const TIMER_BLINK: usize = 1;
+/// Try the new-output check again: it came while the app was busy (see `drain_or_retry`).
+const TIMER_WAKE: usize = 4;
 
 /// `--dev`: a separate test copy with its own window, pipe and settings folder,
 /// so testing a new build never touches the Grace you are working in.
@@ -102,6 +104,20 @@ fn run_deferred(hwnd: HWND) {
     }
 }
 
+/// Read new output and events, then repaint.
+///
+/// Some Windows calls run their own message loop while we are still inside the app
+/// (opening a link does this). A wake message that arrives then cannot use the app,
+/// so we try again in 15 ms. Dropping it would freeze the screen: no new wake is
+/// sent until this one is handled.
+fn drain_or_retry(hwnd: HWND) {
+    if with_app(|a| a.drain()).is_none() {
+        unsafe {
+            SetTimer(Some(hwnd), TIMER_WAKE, 15, None);
+        }
+    }
+}
+
 fn lparam_xy(lp: LPARAM) -> (f32, f32) {
     let x = (lp.0 & 0xFFFF) as i16 as f32;
     let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f32;
@@ -139,7 +155,12 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             Some(0)
         }
         pane::WM_APP_WAKE => {
-            with_app(|a| a.drain());
+            drain_or_retry(hwnd);
+            Some(0)
+        }
+        WM_TIMER if wp.0 == TIMER_WAKE => {
+            let _ = KillTimer(Some(hwnd), TIMER_WAKE);
+            drain_or_retry(hwnd);
             Some(0)
         }
         win::WM_APP_TRAY => {

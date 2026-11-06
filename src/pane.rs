@@ -1,7 +1,7 @@
 //! One terminal pane: the screen grid (alacritty_terminal) + the shell process (ConPTY).
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -26,19 +26,38 @@ use crate::render::RowCaches;
 pub const WM_APP_WAKE: u32 = 0x8000 + 1;
 static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
 static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+/// When the pending wake message was sent (ms, from `clock_ms`).
+static WAKE_SENT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// If a wake message got no answer for this long, it was lost: send another.
+const WAKE_LOST_MS: u64 = 1000;
 
 pub fn set_main_hwnd(h: HWND) {
     HWND_RAW.store(h.0 as isize, Ordering::SeqCst);
 }
 
+fn clock_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
 /// Ask the UI thread to look at new events and repaint. Many calls in a row
 /// become one message, so a fast-printing program cannot flood the window.
+///
+/// Safety net: if the message was lost (nobody answered for a second), send it again.
+/// Before this, one lost message stopped the screen from updating until Grace restarted:
+/// the flag stayed "already asked", so no new message was ever sent.
 pub fn wake() {
-    if !WAKE_PENDING.swap(true, Ordering::AcqRel) {
-        let h = HWND_RAW.load(Ordering::SeqCst);
-        unsafe {
-            let _ = PostMessageW(Some(HWND(h as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
-        }
+    let now = clock_ms();
+    if WAKE_PENDING.swap(true, Ordering::AcqRel) && now.saturating_sub(WAKE_SENT_MS.load(Ordering::Acquire)) < WAKE_LOST_MS {
+        return;
+    }
+    WAKE_SENT_MS.store(now, Ordering::Release);
+    let h = HWND_RAW.load(Ordering::SeqCst);
+    let sent = unsafe { PostMessageW(Some(HWND(h as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0)) };
+    if sent.is_err() {
+        // Not sent (window not made yet, or its queue is full): let the next call try again.
+        WAKE_PENDING.store(false, Ordering::Release);
     }
 }
 
