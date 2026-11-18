@@ -856,7 +856,8 @@ impl App {
                 }
                 // Thumbnails: only for Claude. They take no columns (they are drawn on
                 // empty space), so the terminal keeps its full width.
-                if bar && self.cfg.thumbnails && tr.w > 60.0 * cw {
+                let claude = self.panes.get(&id).is_some_and(|p| p.dormant.is_none() && p.is_claude());
+                if bar && claude && self.cfg.thumbnails && tr.w > 60.0 * cw {
                     thumb_panes.push(id);
                 }
                 if let Some(p) = self.panes.get_mut(&id) {
@@ -1369,6 +1370,15 @@ impl App {
                 };
                 self.scroll(s);
                 self.frame_us.clear();
+            // Put tab `tab` (default: active) to sleep, like the RAM saver does (for tests).
+            "sleep" => match self.tab_arg(j) {
+                Some(i) => {
+                    self.sleep_tab(i);
+                    self.relayout();
+                    json!({"ok": true})
+                }
+                None => json!({"ok": false, "error": "no such tab"}),
+            },
                 json!({"ok": true})
             }
             "zoom" => {

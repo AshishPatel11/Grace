@@ -1,4 +1,4 @@
-//! The typing box under a Claude tab: where it sits, keys, mouse, sending, drawing.
+//! The typing box under a tab (Claude or a shell): where it sits, keys, mouse, sending, drawing.
 //! The text editing itself (caret, selection, undo) is in `compose.rs`.
 //!
 //! How keys are split between the box and Claude:
@@ -121,9 +121,13 @@ fn hit(l: &IDWriteTextLayout, text: &[u16], x: f32, y: f32) -> usize {
 }
 
 impl App {
-    /// Should this pane show a typing box?
+    /// Should this pane show a typing box? Claude follows the `input_box` setting (and the
+    /// toggle flips it). A shell only gets the box when you open it.
     pub fn box_wanted(&self, id: u64) -> bool {
-        self.panes.get(&id).is_some_and(|p| p.dormant.is_none() && (self.cfg.input_box != p.compose.toggled) && p.is_claude())
+        self.panes.get(&id).is_some_and(|p| {
+            let open = if p.is_claude() { self.cfg.input_box != p.compose.toggled } else { p.compose.toggled };
+            p.dormant.is_none() && p.live.is_some() && open
+        })
     }
 
     fn box_hit(&self, id: u64) -> Option<BoxHit> {
@@ -192,7 +196,7 @@ impl App {
     pub fn box_toggle(&mut self) {
         let Some(id) = self.focused_id() else { return };
         if let Some(p) = self.panes.get_mut(&id) {
-            if !p.is_claude() {
+            if p.live.is_none() {
                 return;
             }
             p.compose.toggled = !p.compose.toggled;
@@ -210,18 +214,20 @@ impl App {
         self.invalidate();
     }
 
-    /// Send the box text to Claude: typed in, then Enter.
+    /// Send the box text to Claude (or the shell): typed in, then Enter.
     fn box_send(&mut self, id: u64) {
         let Some(p) = self.panes.get_mut(&id) else { return };
+        let claude = p.is_claude();
         let Some(l) = &p.live else { return };
         let text = p.compose.take();
-        {
+        let bracketed = {
             let mut t = l.term.lock();
             if t.grid().display_offset() != 0 {
                 t.scroll_display(Scroll::Bottom);
             }
             t.selection = None;
-        }
+            claude || t.mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+        };
         let tx = l.tx.clone();
         std::thread::spawn(move || {
             use alacritty_terminal::event_loop::Msg;
@@ -229,8 +235,9 @@ impl App {
             let clean = text.replace('\x1b', "");
             // Several lines (or a lot of text) go in as one paste, so the new lines do not
             // send the message early. A short line is typed, so "/" and "!" act as usual.
-            let paste = clean.contains('\n') || clean.len() > 300;
-            let body = if paste { format!("\x1b[200~{}\x1b[201~", clean.replace('\n', "\r")) } else { clean };
+            // A shell that does not know pastes gets the lines typed: each one runs.
+            let paste = bracketed && (clean.contains('\n') || clean.len() > 300);
+            let body = if paste { format!("\x1b[200~{}\x1b[201~", clean.replace('\n', "\r")) } else { clean.replace('\n', "\r") };
             let _ = tx.send(Msg::Input(Cow::Owned(body.into_bytes())));
             // Claude must see the text before the Enter, or the Enter is taken as part of it.
             std::thread::sleep(Duration::from_millis(if paste { 160 } else { 50 }));
@@ -249,7 +256,8 @@ impl App {
                 self.box_changed(id);
             }
             _ => {
-                if win::clipboard_has_image() {
+                // Only Claude takes pictures (Alt+V); a shell would get a stray key.
+                if win::clipboard_has_image() && self.panes.get(&id).is_some_and(|p| p.is_claude()) {
                     self.note_pasted_image(id);
                     self.write_focused(b"\x1bv".to_vec());
                 }
@@ -418,8 +426,10 @@ impl App {
             }
         }
         let Some(id) = self.box_takes_keys() else { return false };
-        let c = &mut self.panes.get_mut(&id).unwrap().compose;
-        if c.is_empty() && s == "/" {
+        let p = self.panes.get_mut(&id).unwrap();
+        let claude = p.is_claude();
+        let c = &mut p.compose;
+        if claude && c.is_empty() && s == "/" {
             // Let Claude show its command menu: this command goes straight to Claude.
             c.passthrough = true;
             c.passthrough_len = 1;

@@ -1,11 +1,13 @@
-//! The thin bar under a Claude tab (like Warp's): a mic button and a "Rich input" button.
+//! The thin bar under every tab (like Warp's): a mic button and a "Rich input" button.
 //!
-//! - Mic: listens and types what you say into Claude's own input line (or into the
-//!   Rich input box when it is open). It turns red while it listens, and the words heard
-//!   so far show next to the buttons. See `voice.rs`.
+//! - Mic: listens and types what you say into the tab: Claude's own input line, a shell's
+//!   command line, or the Rich input box when it is open. It turns red while it listens,
+//!   and the words heard so far show next to the buttons. See `voice.rs`.
 //! - Rich input: opens or closes the Word-like typing box for this tab (Ctrl+Shift+I).
 //! - Folder: shows the folder this tab works in. Click it to open Claude in another
 //!   folder (in a new tab), or to show this folder in Explorer. See `folders.rs`.
+//!
+//! On a sleeping tab, the mic and Rich input buttons wake the chat first.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::SetCapture;
 
@@ -31,9 +33,9 @@ const RICH_LABEL: &str = "Rich input";
 const RICH_KEYS: &str = "Ctrl+Shift+I";
 
 impl App {
-    /// Should this pane have the bar? (A running Claude.)
+    /// Should this pane have the bar? Every pane does: Claude, a shell, or a sleeping chat.
     pub fn toolbar_wanted(&self, id: u64) -> bool {
-        self.cfg.toolbar && self.panes.get(&id).is_some_and(|p| p.dormant.is_none() && p.is_claude())
+        self.cfg.toolbar && self.panes.contains_key(&id)
     }
 
     /// The bar at the bottom of pane rect `r`.
@@ -67,6 +69,16 @@ impl App {
     pub fn toolbar_mouse_down(&mut self, x: f32, y: f32) -> bool {
         let Some(t) = self.toolbar_at(x, y) else { return false };
         self.focus_pane(t.id);
+        let wants_live = t.mic.contains(x, y) || t.rich.contains(x, y);
+        if wants_live && self.panes.get(&t.id).is_some_and(|p| p.dormant.is_some()) {
+            // A sleeping tab: wake the chat first. If it did not start (it is open in
+            // another window and Grace asks first), stop here.
+            self.resume(t.id);
+            if self.panes.get(&t.id).is_none_or(|p| p.live.is_none()) {
+                return true;
+            }
+            self.relayout();
+        }
         if t.mic.contains(x, y) {
             self.guess_clear();
             self.toggle_voice();

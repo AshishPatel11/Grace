@@ -844,8 +844,8 @@ impl App {
         self.invalidate();
     }
 
-    /// Type heard words: into the Rich input box when it is open, else into Claude's
-    /// own input line, as if typed on the keyboard.
+    /// Type heard words: into the Rich input box when it is open, else into the tab
+    /// (Claude's input line or the shell's command line), as if typed on the keyboard.
     fn type_heard(&mut self, id: u64, text: &str) {
         let boxed = self.ui.boxes.iter().any(|b| b.id == id)
             && self.panes.get(&id).is_some_and(|p| !p.compose.passthrough && p.claude_status() != Some("asking"));
