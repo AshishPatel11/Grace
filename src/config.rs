@@ -45,6 +45,9 @@ pub struct Config {
     /// Small pictures at the right edge, next to each line with `[Image #N]` or an image
     /// file path. Click one to see it big.
     pub thumbnails: bool,
+    /// Claude's chat drawn like a chat app: code in boxes with a Copy button, tool calls
+    /// dimmer with a line on the left, bigger headings (see chat.rs).
+    pub chat_style: bool,
     /// Drag with the mouse selects text even when the program (Claude) uses the mouse.
     /// A click without dragging still goes to the program.
     pub mouse_select: bool,
@@ -115,6 +118,7 @@ impl Default for Config {
             toolbar: true,
             instant_typing: true,
             thumbnails: true,
+            chat_style: true,
             mouse_select: true,
             voice_engine: "auto".into(),
             voice_model: "base.en".into(),

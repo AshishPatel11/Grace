@@ -226,6 +226,7 @@ impl App {
                 t.scroll_display(Scroll::Bottom);
             }
             t.selection = None;
+            p.selmem.forget();
             claude || t.mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
         };
         let tx = l.tx.clone();

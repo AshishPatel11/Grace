@@ -4,6 +4,8 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod chat;
+mod selmem;
 mod compose;
 mod composebox;
 mod config;
@@ -182,6 +184,16 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             // A stop the speech engine has not answered yet: free the mic if it is late.
             let _ = KillTimer(Some(hwnd), voice::TIMER_VOICE);
             with_app(|a| a.voice_watchdog());
+            Some(0)
+        }
+        WM_TIMER if wp.0 == app::TIMER_DRAG => {
+            with_app(|a| {
+                if !a.drag_tick() {
+                    unsafe {
+                        let _ = KillTimer(Some(a.hwnd), app::TIMER_DRAG);
+                    }
+                }
+            });
             Some(0)
         }
         WM_TIMER if wp.0 == 2 => {

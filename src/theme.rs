@@ -20,6 +20,12 @@ pub const BLUE: Rgb = Rgb::hex(0x5BA4F5);
 pub const SELECTION: Rgb = Rgb::hex(0x2F4A73);
 pub const CURSOR: Rgb = Rgb::hex(0xE6E8EC);
 pub const CARD: Rgb = Rgb::hex(0x1B1E25);
+/// Claude's chat (see chat.rs): code boxes, inline code, "---" lines, headings.
+pub const CODE_BG: Rgb = Rgb::hex(0x1C1F27);
+pub const CODE_HEAD: Rgb = Rgb::hex(0x242832);
+pub const PILL: Rgb = Rgb::hex(0x2A2F3D);
+pub const RULE: Rgb = Rgb::hex(0x3A3F4B);
+pub const HEAD_TEXT: Rgb = Rgb::hex(0xF4F5F7);
 
 const ANSI: [u32; 16] = [
     0x2A2E36, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD7DAE0, //

@@ -252,6 +252,11 @@ pub fn spawn(a: SpawnArgs<'_>) -> std::io::Result<(Live, Arc<Mutex<Option<EventL
     // symbols when they recognise the terminal. This is the name they look for.
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("TERM_PROGRAM".to_string(), "Grace".to_string());
+    // Claude Code only uses these when it knows the terminal by name (Warp, iTerm, ...).
+    // It does not know "Grace", so without these it prints links as "text (https://...)"
+    // and ~~old~~ with the tildes. Grace draws both, so turn them on.
+    env.insert("FORCE_HYPERLINK".to_string(), "1".to_string());
+    env.insert("CLAUDE_CODE_FORCE_STRIKETHROUGH".to_string(), "1".to_string());
     env.insert("GRACE_PANE".to_string(), a.pane.to_string());
     // The old name, for scripts made before the rename.
     env.insert("PULSETERM_PANE".to_string(), a.pane.to_string());
@@ -320,6 +325,15 @@ pub struct Pane {
     pub predict: crate::predict::Predict,
     /// Which pictures each screen row points to, by the row's content hash (thumbnails).
     pub thumb_rows: std::collections::HashMap<u64, crate::thumbs::RowPics>,
+    /// What each chat row was (answer, tool call...), by the row's content hash, so rows keep
+    /// their look after their "●" scrolls off the top (see chat.rs).
+    pub chat_kinds: std::collections::HashMap<u64, crate::chat::Kind>,
+    /// What chat.rs found on screen in the last frame (test copy only, for the pipe).
+    pub chat_info: Option<serde_json::Value>,
+    /// The selection while a full-screen program (Claude) scrolls (see selmem.rs).
+    pub selmem: crate::selmem::SelMem,
+    /// Claude's chat area ends at this screen row (its input box starts there).
+    pub chat_bottom: Option<usize>,
 }
 
 impl Pane {
@@ -352,6 +366,10 @@ impl Pane {
             pending_images: Default::default(),
             predict: Default::default(),
             thumb_rows: Default::default(),
+            chat_kinds: Default::default(),
+            chat_info: None,
+            selmem: Default::default(),
+            chat_bottom: None,
         }
     }
 

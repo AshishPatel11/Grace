@@ -116,7 +116,14 @@ pub struct Ui {
     pub modal_album: Vec<crate::preview::Preview>,
     /// The recent folders shown in the last folder menu (menu id 200 + index).
     pub folder_menu: Vec<String>,
+    /// Copy buttons on code blocks drawn in the last frame.
+    pub code_buttons: Vec<crate::chat::CodeHit>,
+    /// The Copy button just clicked (shows "Copied" for a moment).
+    pub copied: Option<(usize, Instant)>,
 }
+
+/// Timer: keep scrolling while a selection drag is past the top or bottom edge.
+pub const TIMER_DRAG: usize = 6;
 
 /// In a menu's items: `(SUB_START, "Label")` opens a submenu, `(SUB_END, "")` closes it.
 pub const SUB_START: u32 = u32::MAX;
@@ -189,6 +196,8 @@ pub struct App {
     pub perf: (u64, u64, u64, u64),
     /// Where the pictures of each chat are in its log (for previews).
     pub chat_images: HashMap<String, crate::images::ChatImages>,
+    /// Code blocks of each Claude chat, read from its log (for code boxes and Copy).
+    pub chat_code: HashMap<String, crate::chat::CodeIndex>,
     /// Thumbnails that could not be loaded, and when we last tried (retry after a while).
     pub thumb_miss: HashMap<String, Instant>,
     /// The mic is listening (see voice.rs).
@@ -240,6 +249,7 @@ impl App {
             frame_us: Default::default(),
             perf: (0, 0, 0, 0),
             chat_images: HashMap::new(),
+            chat_code: HashMap::new(),
             thumb_miss: HashMap::new(),
             voice: None,
             voice_seq: 0,
@@ -1324,6 +1334,20 @@ impl App {
                 let ok = self.tab_arg(j).and_then(|i| self.tabs.get(i)).map(|t| t.focus).is_some_and(|id| self.detach_pane(id));
                 json!({"ok": ok, "tabs": self.tabs.len()})
             }
+            // Mouse steps for tests: {"cmd":"mouse","do":"down"|"move"|"up"|"wheel","x":..,"y":..,"delta":120}.
+            "mouse" => {
+                let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let (x, y) = (f("x"), f("y"));
+                match j.get("do").and_then(|v| v.as_str()).unwrap_or("") {
+                    "down" => self.on_mouse_down(x, y, 0),
+                    "move" => self.on_mouse_move(x, y),
+                    "up" => self.on_mouse_up(x, y, 0),
+                    "wheel" => self.on_wheel(x, y, f("delta") as i16),
+                    other => return json!({"ok": false, "error": format!("unknown mouse step '{other}'")}),
+                }
+                self.invalidate();
+                json!({"ok": true})
+            }
             // A left click at a point (tests), and what is open big afterwards.
             "click" => {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -1346,6 +1370,15 @@ impl App {
                 self.voice_state()
             }
             "voice_state" => self.voice_state(),
+            // Put tab `tab` (default: active) to sleep, like the RAM saver does (for tests).
+            "sleep" => match self.tab_arg(j) {
+                Some(i) => {
+                    self.sleep_tab(i);
+                    self.relayout();
+                    json!({"ok": true})
+                }
+                None => json!({"ok": false, "error": "no such tab"}),
+            },
             // Push to talk without a keyboard: {"down": true} = Right Alt down, false = up.
             "voice_hold" => {
                 if let Some(w) = j.get("wav").and_then(|v| v.as_str()).filter(|_| crate::dev()) {
@@ -1370,15 +1403,6 @@ impl App {
                 };
                 self.scroll(s);
                 self.frame_us.clear();
-            // Put tab `tab` (default: active) to sleep, like the RAM saver does (for tests).
-            "sleep" => match self.tab_arg(j) {
-                Some(i) => {
-                    self.sleep_tab(i);
-                    self.relayout();
-                    json!({"ok": true})
-                }
-                None => json!({"ok": false, "error": "no such tab"}),
-            },
                 json!({"ok": true})
             }
             "zoom" => {
@@ -1386,7 +1410,7 @@ impl App {
                 json!({"ok": true})
             }
             "selection" => {
-                let t = self.focused_pane().and_then(|p| p.live.as_ref()).and_then(|l| l.term.lock().selection_to_string());
+                let t = self.focused_id().and_then(|id| self.selection_text(id));
                 json!({"ok": true, "text": t})
             }
             "refresh" => {
@@ -1420,14 +1444,45 @@ impl App {
                 let g = t.grid();
                 let off = g.display_offset() as i32;
                 let mut lines = Vec::new();
+                // {"styles": true}: each row also lists its runs as [column, text, fg, bg, flags],
+                // so tests can see the colours a program used.
+                let want_styles = j.get("styles").and_then(|v| v.as_bool()).unwrap_or(false);
+                let mut styles = Vec::new();
                 for r in 0..t.screen_lines() as i32 {
                     let row = &g[Line(r - off)];
                     let s: String = (0..t.columns()).map(|c| row[Column(c)].c).collect();
                     lines.push(s.trim_end().to_string());
+                    if want_styles {
+                        let mut runs: Vec<serde_json::Value> = Vec::new();
+                        let mut cur: Option<(usize, String, String, String, String)> = None;
+                        for c in 0..t.columns() {
+                            let cell = &row[Column(c)];
+                            let fg = crate::theme::resolve(cell.fg, t.colors());
+                            let bg = crate::theme::resolve(cell.bg, t.colors());
+                            let key = (format!("{:02x}{:02x}{:02x}", fg.0, fg.1, fg.2), format!("{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2), format!("{:?}", cell.flags));
+                            match &mut cur {
+                                Some(x) if (&x.2, &x.3, &x.4) == (&key.0, &key.1, &key.2) => x.1.push(cell.c),
+                                _ => {
+                                    if let Some(x) = cur.take() {
+                                        runs.push(json!([x.0, x.1, x.2, x.3, x.4]));
+                                    }
+                                    cur = Some((c, cell.c.to_string(), key.0, key.1, key.2));
+                                }
+                            }
+                        }
+                        if let Some(x) = cur.take() {
+                            if !x.1.trim().is_empty() || x.3 != "14161b" {
+                                runs.push(json!([x.0, x.1, x.2, x.3, x.4]));
+                            }
+                        }
+                        styles.push(serde_json::Value::Array(runs));
+                    }
                 }
                 let c = t.grid().cursor.point;
                 let cell = &g[c.line][c.column];
-                json!({"ok": true, "cols": t.columns(), "lines": lines, "mode": format!("{:?}", t.mode()),
+                json!({"ok": true, "cols": t.columns(), "lines": lines, "styles": styles, "chat": p.chat_info,
+                       "origin": self.ui.panes.iter().find(|(q, _)| *q == pid).map(|(_, r)| self.text_origin(*r)), "cell": [self.gfx.cell_w, self.gfx.cell_h],
+                       "code_buttons": self.ui.code_buttons.iter().map(|b| [b.rect.x, b.rect.y, b.rect.w, b.rect.h]).collect::<Vec<_>>(), "mode": format!("{:?}", t.mode()),
                        "cursor": [c.line.0, c.column.0], "cursor_cell": format!("{:?} {:?}", cell.c, cell.flags),
                        "cursor_style": format!("{:?}", t.cursor_style())})
             }
@@ -1457,6 +1512,7 @@ impl App {
                         t.scroll_display(Scroll::Bottom);
                     }
                     t.selection = None;
+                    p.selmem.forget();
                 }
                 l.write(bytes);
             }
@@ -1627,8 +1683,11 @@ impl App {
                 }
                 0x43 if self.has_selection() => {
                     self.copy();
-                    if let Some(l) = self.focused_pane().and_then(|p| p.live.as_ref()) {
-                        l.term.lock().selection = None;
+                    if let Some(p) = self.focused_pane() {
+                        if let Some(l) = p.live.as_ref() {
+                            l.term.lock().selection = None;
+                        }
+                        p.selmem.forget();
                     }
                     self.invalidate();
                     return true;
@@ -1751,10 +1810,7 @@ impl App {
     // ---------------- clipboard ----------------
 
     pub fn copy(&mut self) {
-        let text = self
-            .focused_pane()
-            .and_then(|p| p.live.as_ref())
-            .and_then(|l| l.term.lock().selection_to_string());
+        let text = self.focused_id().and_then(|id| self.selection_text(id));
         if let Some(t) = text {
             win::set_clipboard_text(self.hwnd, &t);
         }
@@ -1818,6 +1874,9 @@ impl App {
             t.selection = None;
             t.scroll_display(Scroll::Bottom);
         }
+        if let Some(p) = self.ui.search.as_ref().and_then(|s| self.panes.get(&s.pane)) {
+            p.selmem.forget();
+        }
         self.search_step(true);
     }
 
@@ -1828,6 +1887,9 @@ impl App {
         if s.query.is_empty() {
             s.found = None;
             l.term.lock().selection = None;
+            if let Some(p) = self.panes.get(&s.pane) {
+                p.selmem.forget();
+            }
             self.invalidate();
             return;
         }
@@ -2279,6 +2341,14 @@ impl App {
                 self.open_modal(t.pv, album);
                 return;
             }
+            // Copy on a code box in Claude's chat: the exact code from the chat log.
+            if let Some(b) = self.ui.code_buttons.iter().find(|b| b.rect.contains(x, y)).cloned() {
+                crate::win::set_clipboard_text(self.hwnd, &b.code);
+                self.ui.copied = Some((b.key(), Instant::now()));
+                let n = b.code.lines().count();
+                self.show_toast(format!("Copied {n} line{} of code.", if n == 1 { "" } else { "s" }));
+                return;
+            }
         }
         let Some((id, r)) = self.pane_at(x, y) else { return };
         self.focus_pane(id);
@@ -2320,8 +2390,11 @@ impl App {
         if app_mouse && count == 1 {
             // Wait and see: moving the mouse turns this into a text selection; letting go
             // without moving sends Claude a normal click. Double/triple-click select here.
-            if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
-                l.term.lock().selection = None;
+            if let Some(p) = self.panes.get(&id) {
+                if let Some(l) = p.live.as_ref() {
+                    l.term.lock().selection = None;
+                }
+                p.selmem.forget();
             }
             self.ui.drag = Drag::Pending { id, x, y };
             unsafe { SetCapture(self.hwnd) };
@@ -2341,7 +2414,11 @@ impl App {
                     s.update(pt, side);
                 }
             } else {
-                t.selection = if count == 1 { Some(Selection::new(ty, pt, side)) } else { Some(Selection::new(ty, pt, side)) };
+                t.selection = Some(Selection::new(ty, pt, side));
+                drop(t);
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.selmem.start(ty, pt, side);
+                }
             }
         }
         self.ui.drag = Drag::Select(id);
@@ -2462,6 +2539,9 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                         if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
                             l.term.lock().selection = Some(Selection::new(SelectionType::Simple, pt, side));
                         }
+                        if let Some(p) = self.panes.get_mut(&id) {
+                            p.selmem.start(SelectionType::Simple, pt, side);
+                        }
                     }
                 }
                 self.ui.drag = Drag::Select(id);
@@ -2481,23 +2561,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
             Drag::Select(id) => {
                 if let Some((_, r)) = self.ui.panes.iter().find(|(p, _)| *p == id).copied() {
-                    let (_, oy) = self.text_origin(r);
-                    if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
-                        // Drag above or below the pane to scroll.
-                        if y < oy {
-                            l.term.lock().scroll_display(Scroll::Delta(1));
-                        } else if y > r.bottom() {
-                            l.term.lock().scroll_display(Scroll::Delta(-1));
-                        }
-                    }
-                    if let Some((pt, side)) = self.grid_point(id, r, x, y) {
-                        if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
-                            if let Some(s) = &mut l.term.lock().selection {
-                                s.update(pt, side);
-                            }
-                        }
-                    }
-                    self.invalidate();
+                    self.drag_select(id, r, x, y);
                 }
                 return;
             }
@@ -2571,6 +2635,10 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                 let mut t = l.term.lock();
                 if t.selection.as_ref().is_some_and(|s| s.is_empty()) {
                     t.selection = None;
+                    drop(t);
+                    if let Some(p) = self.panes.get(&id) {
+                        p.selmem.forget();
+                    }
                 }
             }
             if self.cfg.copy_on_select {
@@ -2578,6 +2646,98 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
         }
         self.invalidate();
+    }
+
+    /// Dragging a selection to (x, y): scroll when the mouse is past the top or bottom,
+    /// and move the selection's end.
+    fn drag_select(&mut self, id: u64, r: Rect, x: f32, y: f32) {
+        self.drag_scroll(id, r, y);
+        // In full-screen programs the end follows the mouse while drawing (selmem.rs),
+        // because the text under the mouse moves when the program scrolls.
+        if !self.panes.get(&id).is_some_and(|p| p.selmem.active()) {
+            if let Some((pt, side)) = self.grid_point(id, r, x, y) {
+                if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
+                    if let Some(s) = &mut l.term.lock().selection {
+                        s.update(pt, side);
+                    }
+                }
+            }
+        }
+        self.invalidate();
+    }
+
+    /// The mouse is past the top or bottom of the text while selecting: scroll one step,
+    /// and again every 60 ms while it stays there (`drag_tick`). In Claude, "bottom" is the
+    /// end of the chat (its input box is below). Farther away scrolls faster.
+    fn drag_scroll(&mut self, id: u64, r: Rect, y: f32) -> bool {
+        let (_, oy) = self.text_origin(r);
+        let ch = self.gfx.cell_h;
+        let Some(p) = self.panes.get(&id) else { return false };
+        let Some(l) = p.live.as_ref() else { return false };
+        let mode = *l.term.lock().mode();
+        let full = mode.contains(TermMode::ALT_SCREEN);
+        let bottom = match p.chat_bottom {
+            Some(b) if full => oy + b as f32 * ch,
+            _ => r.bottom(),
+        };
+        let (dir, far) = if y < oy {
+            (1, oy - y)
+        } else if y > bottom {
+            (-1, y - bottom)
+        } else {
+            return false;
+        };
+        let steps = 1 + ((far / (ch * 3.0)) as i32).min(3);
+        if full && mode.intersects(TermMode::MOUSE_MODE) {
+            // Claude scrolls its own chat: send it the mouse wheel, over the chat.
+            let at = (r.x + r.w / 2.0, oy + ch);
+            for _ in 0..steps {
+                self.mouse_report(id, r, at.0, at.1, if dir > 0 { 64 } else { 65 }, true);
+            }
+        } else {
+            l.term.lock().scroll_display(Scroll::Delta(dir * steps));
+        }
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), TIMER_DRAG, 60, None);
+        }
+        true
+    }
+
+    /// The drag-scroll timer: keep scrolling while the mouse stays past the edge.
+    /// Returns false when the timer can stop.
+    pub fn drag_tick(&mut self) -> bool {
+        let Drag::Select(id) = self.ui.drag else { return false };
+        let Some((_, r)) = self.ui.panes.iter().find(|(p, _)| *p == id).copied() else { return false };
+        let (x, y) = self.ui.mouse;
+        let (_, oy) = self.text_origin(r);
+        let chat_end = self.panes.get(&id).and_then(|p| p.chat_bottom).map(|b| oy + b as f32 * self.gfx.cell_h);
+        if !(y < oy || y > r.bottom() || chat_end.is_some_and(|e| y > e)) {
+            return false;
+        }
+        self.drag_select(id, r, x, y);
+        true
+    }
+
+    /// The selected text of a pane. In full-screen programs part of it may have scrolled
+    /// off the screen; selmem.rs kept those rows.
+    fn selection_text(&self, id: u64) -> Option<String> {
+        let p = self.panes.get(&id)?;
+        let t = p.live.as_ref()?.term.lock();
+        if p.selmem.active() && t.mode().contains(TermMode::ALT_SCREEN) {
+            let rows: Vec<Vec<char>> = (0..t.screen_lines() as i32)
+                .map(|r| {
+                    let row = &t.grid()[Line(r)];
+                    (0..t.columns())
+                        .map(|c| &row[Column(c)])
+                        .map(|c| if c.flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER) { '\0' } else { c.c })
+                        .collect()
+                })
+                .collect();
+            if let Some(s) = p.selmem.text(&rows) {
+                return Some(s);
+            }
+        }
+        t.selection_to_string()
     }
 
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16) {
@@ -2651,7 +2811,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         if let Some(t) = self.toolbar_at(x, y) {
             return if t.mic.contains(x, y) || t.rich.contains(x, y) || t.folder.contains(x, y) { 2 } else { 0 };
         }
-        if self.thumb_at(x, y).is_some() {
+        if self.thumb_at(x, y).is_some() || self.ui.code_buttons.iter().any(|b| b.rect.contains(x, y)) {
             return 2;
         }
         if let Some((id, r)) = self.pane_at(x, y) {

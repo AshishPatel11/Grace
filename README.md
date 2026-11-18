@@ -82,8 +82,25 @@ about once a second just to show the git branch. Grace only draws when something
     become one card: 2 side by side, 3 as one wide + two small, 4 or more as a 2×2 grid where the
     last tile says "+N". Click a tile to open it big, then ← / → to see the others.
   - Paths with spaces, and paths split over two lines, are not detected yet.
+- **Claude's chat looks like a chat app** (setting `chat_style`, on by default). The text itself
+  is never changed, so selecting and copying work as before.
+  - **Code blocks** get a box with the language name and a **Copy** button. Copy gives the exact
+    code. Claude prints a ```bash block in the same white as a sentence, so the screen alone cannot
+    tell code from text: Grace reads Claude's code blocks from the chat log and finds those lines
+    on screen. A block shows its box once Claude has finished that message.
+  - **Tool calls** (`● Update(...)`, `⎿ ...`, "Ran 3 shell commands") get dimmer text and a thin line
+    on the left: green = done, red = failed, grey = running. Claude's answer stays bright.
+  - **Markdown:** headings are drawn bigger, `---` is a real line, `- ` lists get `•` bullets,
+    and `inline code` gets a soft background.
+  - Links are real links (Ctrl+click) and `~~old~~` is struck through. Claude Code only does
+    these for terminals it knows by name, so Grace tells it they work (`FORCE_HYPERLINK=1`,
+    `CLAUDE_CODE_FORCE_STRIKETHROUGH=1`). New tabs get this; Refresh chat for open ones.
 - **Select text with a normal drag**, even inside Claude's full-screen view. A click without
   dragging still goes to Claude. Double-click = word, triple-click = line. Ctrl+C copies.
+  - The selection stays on its text when Claude scrolls (new output, or the mouse wheel).
+  - Drag above the chat, or below it onto the input box, and Claude keeps scrolling while you
+    select (farther = faster), so you can select more than one screen. Copy gets every
+    selected line, also the ones that scrolled off.
 - **Tabs and split panes.** Drag tabs to reorder. Drag the line between panes to resize.
   - **Split with an existing tab:** right-click a tab (or inside a pane) > Split right with tab ▸ /
     Split down with tab ▸ > pick the tab. That tab's panes move in next to it. Nothing restarts:
@@ -199,6 +216,8 @@ right-click a tab > Reload settings.
 - `instant_typing` (default true): show typed letters before Claude draws them.
 - `thumbnails` (default true): small pictures at the right edge, click to open big.
 - `mouse_select` (default true): a drag selects text even when the program uses the mouse.
+- `chat_style` (default true): code boxes with Copy, dimmer tool calls, bigger headings in
+  Claude tabs. `false` = Claude's text exactly as Claude draws it.
 - `voice_engine` (default "auto"): the mic. "auto" = Whisper on this PC. Or Windows' own engines:
   "windows" (modern, else offline), "modern", "offline", or "win+h" (open Windows' voice typing
   panel, the old way).
@@ -215,6 +234,8 @@ its own pipe (`\\.\pipe\grace-dev-<username>`) and its own settings folder
 (`%APPDATA%\Grace-dev`). It opens behind other windows and never takes the keyboard.
 Extra pipe commands for tests: `{"cmd":"type","text":"..."}`, `{"cmd":"key","vk":13,"shift":true}`,
 `{"cmd":"box"}` (box text, caret, selection), `{"cmd":"boxhit","x":..,"y":..}`.
+`{"cmd":"dump","styles":true}` also gives each row's colours and what the chat look found
+(`chat`: code boxes, tool rails, headings; `code_buttons`: where the Copy buttons are).
 Mic tests: `{"cmd":"voice","wav":"C:/say.wav"}` makes the mic listen to a .wav file (test copy
 only), `{"cmd":"voice_hold","down":true}` / `false` acts like Right Alt, `{"cmd":"voice_state"}`
 shows what it heard so far, `{"cmd":"voice_heard","text":"..."}` pretends it heard words.

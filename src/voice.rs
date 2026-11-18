@@ -879,6 +879,9 @@ impl App {
             }
             term.selection = None;
         }
+        if let Some(p) = self.panes.get(&id) {
+            p.selmem.forget();
+        }
         l.write(t.into_bytes());
     }
 

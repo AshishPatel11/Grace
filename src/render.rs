@@ -4,8 +4,9 @@
 //! shaped text (`RowCache`). A row is only re-shaped when its content changes.
 
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::term::cell::{Cell, Flags};
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::CursorShape;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 
@@ -60,12 +61,12 @@ impl RowCaches {
 
 /// One visible cell, copied out of the terminal with its final colours.
 pub struct VCell {
-    c: char,
-    zw: Option<Box<[char]>>,
-    fg: Rgb,
-    bg: Rgb,
-    flags: Flags,
-    sel: bool,
+    pub c: char,
+    pub zw: Option<Box<[char]>>,
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub flags: Flags,
+    pub sel: bool,
 }
 
 struct Snap {
@@ -276,6 +277,7 @@ impl App {
         self.ui.cards.clear();
         self.ui.thumbs.clear();
         self.ui.albums.clear();
+        self.ui.code_buttons.clear();
         self.blink_needed = false;
         let panes = self.ui.panes.clone();
         let multi = panes.len() > 1;
@@ -337,6 +339,9 @@ impl App {
         let term = live.term.clone();
         let pcols = p.cols.max(1);
         let want_thumbs = self.ui.thumb_panes.contains(&id);
+        let chat_pane = p.is_claude();
+        let chat = self.cfg.chat_style && chat_pane;
+        let session = p.stats.claude.as_ref().map(|c| c.session_id.clone()).unwrap_or_default();
 
         // Letters we drew before Claude did: drop the ones Claude has drawn by now.
         let (guesses, guess_cursor) = {
@@ -352,8 +357,14 @@ impl App {
         //    program can keep printing while we draw. Only visible rows are copied:
         //    this is the "virtual scroll" - history length does not change the cost.
         let t_wait = std::time::Instant::now();
-        let snap = {
-            let t = term.lock();
+        // While you drag a selection in this pane: where the mouse is.
+        let drag_at = match self.ui.drag {
+            Drag::Select(d) if d == id => Some(self.ui.mouse),
+            _ => None,
+        };
+        let (cell_w, cell_h) = (self.gfx.cell_w, self.gfx.cell_h);
+        let mut snap = {
+            let mut t = term.lock();
             let waited = t_wait.elapsed().as_micros() as u64;
             let t_copy = std::time::Instant::now();
             let cols = t.columns().min(pcols);
@@ -361,7 +372,6 @@ impl App {
             let grid = t.grid();
             let off = grid.display_offset() as i32;
             let colors = t.colors();
-            let sel = t.selection.as_ref().and_then(|s| s.to_range(&*t));
             let mut rows = Vec::with_capacity(lines);
             for row in 0..lines {
                 let line = Line(row as i32 - off);
@@ -380,27 +390,90 @@ impl App {
                         }
                         z.to_vec().into_boxed_slice()
                     });
-                    let selected = sel.as_ref().is_some_and(|s| s.contains(Point::new(line, Column(col))));
-                    cells.push(VCell { c: cell.c, zw, fg, bg, flags: cell.flags, sel: selected });
+                    cells.push(VCell { c: cell.c, zw, fg, bg, flags: cell.flags, sel: false });
                 }
                 rows.push((hash, line, cells));
             }
             let cursor = t.renderable_content().cursor;
-            let cc = &grid[cursor.point.line][cursor.point.column];
+            let cc = &t.grid()[cursor.point.line][cursor.point.column];
+            let (cursor_char, cursor_wide) = (cc.c, cc.flags.contains(Flags::WIDE_CHAR));
+            let hist = t.grid().history_size();
+
+            // Full-screen programs (Claude) scroll by drawing every row again: move the
+            // selection with the text and keep rows that leave the screen (selmem.rs).
+            let p = self.panes.get_mut(&id).unwrap();
+            let full = t.mode().contains(TermMode::ALT_SCREEN) && off == 0;
+            p.chat_bottom = (full && chat_pane).then(|| {
+                let end = crate::chat::chrome_from(&rows).max(1);
+                // Claude's floating "Jump to bottom" bar does not scroll: the chat ends above it.
+                let bar = |r: usize| rows[r].2.iter().map(|c| c.c).collect::<String>().contains("Jump to bottom");
+                (end.saturating_sub(3)..end).find(|&r| bar(r)).unwrap_or(end).max(1)
+            });
+            let mut hide_sel = false;
+            if full && (t.selection.is_some() || p.selmem.active()) {
+                let end = p.chat_bottom.unwrap_or(lines).min(lines);
+                let hashes: Vec<Option<u64>> =
+                    rows.iter().map(|(h, _, c)| (!c.iter().all(|x| x.c == ' ' && x.bg == BG)).then_some(*h)).collect();
+                let texts: Vec<Vec<char>> = rows
+                    .iter()
+                    .map(|(_, _, c)| c.iter().map(|x| if x.flags.contains(Flags::WIDE_CHAR_SPACER) { '\0' } else { x.c }).collect())
+                    .collect();
+                // The mouse above the chat selects from the top row's start; below it (over
+                // the input box), to the last chat row's end.
+                let drag = drag_at.map(|(mx, my)| {
+                    let cf = (mx - ox) / cell_w;
+                    let col = (cf.floor().max(0.0) as usize).min(cols.saturating_sub(1));
+                    let side = if cf - cf.floor() < 0.5 { Side::Left } else { Side::Right };
+                    let rf = ((my - oy) / cell_h).floor();
+                    if rf < 0.0 {
+                        (0, 0, Side::Left)
+                    } else if rf as usize >= end {
+                        (end - 1, cols.saturating_sub(1), Side::Right)
+                    } else {
+                        (rf as usize, col, side)
+                    }
+                });
+                let cur = t.selection.clone();
+                let range = cur.as_ref().and_then(|s| s.to_range(&*t)).map(|r| (r.start, r.end));
+                let screen = crate::selmem::Screen { hashes: &hashes, cells: &texts, end };
+                if let Some(new) = p.selmem.frame(screen, cur.as_ref(), range, drag) {
+                    t.selection = new;
+                }
+                hide_sel = p.selmem.below_screen();
+            } else if p.selmem.active() {
+                p.selmem.reset();
+            }
+            let sel = if hide_sel { None } else { t.selection.as_ref().and_then(|s| s.to_range(&*t)) };
+            if let Some(s) = &sel {
+                for (_, line, cells) in rows.iter_mut() {
+                    for (col, c) in cells.iter_mut().enumerate() {
+                        c.sel = s.contains(Point::new(*line, Column(col)));
+                    }
+                }
+            }
             self.perf.0 += waited;
             self.perf.1 += t_copy.elapsed().as_micros() as u64;
-            Snap {
-                rows,
-                cols,
-                lines,
-                off,
-                hist: grid.history_size(),
-                cursor,
-                cursor_char: cc.c,
-                cursor_wide: cc.flags.contains(Flags::WIDE_CHAR),
-            }
+            Snap { rows, cols, lines, off, hist, cursor, cursor_char, cursor_wide }
         };
         let link = self.ui.link.as_ref().filter(|(l, _)| *l == id).map(|(_, l)| l.clone());
+
+        // Claude's chat drawn like a chat app (see chat.rs): what each row is, code boxes.
+        let mut deco = None;
+        if chat {
+            let idx = if session.is_empty() {
+                None
+            } else {
+                let i = self.chat_code.entry(session.clone()).or_insert_with(|| crate::chat::CodeIndex::new(&session));
+                i.update();
+                Some(&*i)
+            };
+            let p = self.panes.get_mut(&id).unwrap();
+            let d = crate::chat::analyze(&mut snap.rows, idx, &mut p.chat_kinds);
+            if crate::dev() {
+                p.chat_info = Some(d.summary(&snap.rows));
+            }
+            deco = Some(d);
+        }
 
         // 2) Draw from the copy.
         let t_draw = std::time::Instant::now();
@@ -431,6 +504,10 @@ impl App {
             }
             pics = Some(crate::thumbs::ScreenPics { cols, rows });
         }
+        let geo = crate::chat::Geo { ox, oy, cw, ch, cols, s: g.scale };
+        if let Some(d) = &mut deco {
+            crate::chat::paint_under(g, d, &geo);
+        }
         for (row, (hash, line, cells)) in snap.rows.iter().enumerate() {
             let y = oy + row as f32 * ch;
             let mut run: Option<(usize, Rgb)> = None;
@@ -460,7 +537,8 @@ impl App {
                 shaped += 1;
                 build_row(g, cells)
             });
-            for s in &rc.segs {
+            let hidden = deco.as_ref().is_some_and(|d| d.hide[row]);
+            for s in rc.segs.iter().filter(|_| !hidden) {
                 match s.special.as_ref().filter(|_| fast) {
                     Some((t, f, u, k)) => g.draw_special(t, *f, *u, *k, ox + s.col as f32 * cw, y, s.color),
                     None => g.draw_layout(&s.layout, ox + s.col as f32 * cw, y, s.color),
@@ -478,6 +556,10 @@ impl App {
             }
         }
         p.cache.end_frame();
+        if let Some(d) = &mut deco {
+            let copied = self.ui.copied.filter(|c| c.1.elapsed() < std::time::Duration::from_millis(2500)).map(|c| c.0);
+            crate::chat::paint_over(g, d, &geo, self.ui.mouse, copied, &mut self.ui.code_buttons);
+        }
         self.perf.2 += t_draw.elapsed().as_micros() as u64;
         self.perf.3 += shaped;
 
@@ -804,12 +886,10 @@ impl App {
 }
 
 impl Gfx {
+    /// Its own format: `clone()` of a format only copies the pointer, so changing the
+    /// alignment of a clone would centre `ui_small` everywhere.
     fn ui_center_small(&self) -> windows::Win32::Graphics::DirectWrite::IDWriteTextFormat {
-        unsafe {
-            let f = self.ui_small.clone();
-            let _ = f.SetTextAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER);
-            f
-        }
+        self.ui_small_center.clone()
     }
 }
 

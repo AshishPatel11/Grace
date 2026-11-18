@@ -56,6 +56,9 @@ pub struct Gfx {
     pub ui_bold: IDWriteTextFormat,
     pub ui_small: IDWriteTextFormat,
     pub ui_center: IDWriteTextFormat,
+    pub ui_small_center: IDWriteTextFormat,
+    /// Headings in Claude's chat: [# Title, ## Title].
+    pub heads: Vec<IDWriteTextFormat>,
     /// The typing box: terminal font, wraps long lines.
     pub boxf: IDWriteTextFormat,
     face: IDWriteFontFace,
@@ -115,6 +118,8 @@ impl Gfx {
                 ui_bold: dummy.clone(),
                 ui_small: dummy.clone(),
                 ui_center: dummy.clone(),
+                ui_small_center: dummy.clone(),
+                heads: vec![dummy.clone(), dummy.clone()],
                 boxf: dummy,
                 face,
                 cell_w: 8.0,
@@ -213,6 +218,11 @@ impl Gfx {
             self.ui_bold = self.ui_format(ui_px, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?;
             self.ui_small = self.ui_format(10.5 * self.scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?;
             self.ui_center = self.ui_format(ui_px, DWRITE_FONT_WEIGHT_NORMAL, true)?;
+            self.ui_small_center = self.ui_format(10.5 * self.scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, true)?;
+            self.heads = vec![
+                self.ui_format(px * 1.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,
+                self.ui_format(px * 1.22, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,
+            ];
             Ok(())
         }
     }
