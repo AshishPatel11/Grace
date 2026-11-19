@@ -55,7 +55,7 @@ impl App {
     }
 
     /// The name of the profile that runs Claude (usually "Claude").
-    fn claude_profile(&self) -> String {
+    pub(crate) fn claude_profile(&self) -> String {
         self.cfg
             .profiles
             .iter()

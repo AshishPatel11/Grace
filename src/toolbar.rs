@@ -6,6 +6,10 @@
 //! - Rich input: opens or closes the Word-like typing box for this tab (Ctrl+Shift+I).
 //! - Folder: shows the folder this tab works in. Click it to open Claude in another
 //!   folder (in a new tab), or to show this folder in Explorer. See `folders.rs`.
+//! - Changes (only in a git folder): opens the diff viewer inside Grace, with every
+//!   changed file. See `diffview.rs`.
+//! - Ports: "localhost:3000 ↗" for each port a program in the tab listens on (a dev
+//!   server). Click to open it in the browser. Found by the process watcher (procmon.rs).
 //!
 //! On a sleeping tab, the mic and Rich input buttons wake the chat first.
 
@@ -20,6 +24,9 @@ use crate::theme::*;
 pub const TOOL_H: f32 = 30.0;
 const CHIP_H: f32 = 22.0;
 
+/// Port buttons shown at most.
+pub const MAX_PORTS: usize = 4;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ToolHit {
     pub id: u64,
@@ -27,10 +34,19 @@ pub struct ToolHit {
     pub mic: Rect,
     pub rich: Rect,
     pub folder: Rect,
+    /// Width 0 when the tab is not in a git folder (or there is no room).
+    pub changes: Rect,
+    pub ports: [(Rect, u16); MAX_PORTS],
+    pub n_ports: usize,
 }
 
 const RICH_LABEL: &str = "Rich input";
 const RICH_KEYS: &str = "Ctrl+Shift+I";
+const CHANGES_LABEL: &str = "Changes";
+
+fn port_label(p: u16) -> String {
+    format!("localhost:{p}")
+}
 
 impl App {
     /// Should this pane have the bar? Every pane does: Claude, a shell, or a sleeping chat.
@@ -53,7 +69,30 @@ impl App {
         let name = self.folder_label(id);
         let fw = pad + self.s(14.0) + self.s(6.0) + g.measure(&name, &g.ui_small) + pad;
         let folder = Rect::new(rich.right() + self.s(6.0), y, fw.round().min((r.right() - rich.right() - self.s(16.0)).max(0.0)), ch);
-        ToolHit { id, rect, mic, rich, folder }
+        // The next chips only when they fit whole.
+        let mut x = folder.right() + self.s(6.0);
+        let room = |x: f32, w: f32| x + w <= r.right() - self.s(10.0);
+        let mut changes = Rect::new(x, y, 0.0, ch);
+        if self.pane_repo(id).is_some() {
+            let w = (pad + self.s(12.0) + self.s(6.0) + g.measure(CHANGES_LABEL, &g.ui_small) + pad).round();
+            if room(x, w) {
+                changes.w = w;
+                x += w + self.s(6.0);
+            }
+        }
+        let mut ports = [(Rect::default(), 0u16); MAX_PORTS];
+        let mut n_ports = 0;
+        let list = self.panes.get(&id).filter(|p| p.live.is_some()).map(|p| p.stats.ports.clone()).unwrap_or_default();
+        for p in list.into_iter().take(MAX_PORTS) {
+            let w = (pad + self.s(12.0) + g.measure(&port_label(p), &g.ui_small) + self.s(5.0) + self.s(12.0) + pad / 2.0).round();
+            if !room(x, w) {
+                break;
+            }
+            ports[n_ports] = (Rect::new(x, y, w, ch), p);
+            n_ports += 1;
+            x += w + self.s(6.0);
+        }
+        ToolHit { id, rect, mic, rich, folder, changes, ports, n_ports }
     }
 
     /// The folder button's text: the last part of the tab's folder ("Classpulse").
@@ -88,6 +127,14 @@ impl App {
             let (sx, sy) = self.to_screen(t.folder.x, t.folder.bottom());
             self.folder_menu(t.id, sx, sy);
             return true;
+        } else if t.changes.contains(x, y) {
+            self.open_diff_view(t.id);
+            return true;
+        } else if let Some((_, p)) = t.ports[..t.n_ports].iter().find(|(r, _)| r.contains(x, y)) {
+            let p = *p;
+            crate::win::shell_open(&format!("http://localhost:{p}/"));
+            self.show_toast(format!("Opening localhost:{p} in your browser."));
+            return true;
         }
         unsafe {
             SetCapture(self.hwnd);
@@ -111,7 +158,13 @@ impl App {
     fn paint_voice_status(&self, t: &ToolHit) {
         let Some(v) = self.voice_on(t.id) else { return };
         let g = &self.gfx;
-        let after = if t.folder.w > self.s(40.0) { t.folder.right() } else { t.rich.right() };
+        let mut after = if t.folder.w > self.s(40.0) { t.folder.right() } else { t.rich.right() };
+        if t.changes.w > 0.0 {
+            after = after.max(t.changes.right());
+        }
+        if t.n_ports > 0 {
+            after = after.max(t.ports[t.n_ports - 1].0.right());
+        }
         let x0 = after + self.s(12.0);
         let right = t.rect.right() - self.s(10.0);
         if right - x0 < self.s(60.0) {
@@ -196,6 +249,40 @@ impl App {
                 g.outline(Rect::new(ix, iy, iw, ih), self.s(1.5), fg, 1.0);
                 let tx = ix + iw + self.s(6.0);
                 g.text(&self.folder_label(t.id), &g.ui_small, Rect::new(tx, t.folder.y, t.folder.right() - tx - pad / 2.0, t.folder.h), fg);
+            }
+
+            // Changes: a small "+" over a "−", like a diff, and the label.
+            if t.changes.w > 0.0 {
+                let c = t.changes;
+                let hot = c.contains(mx, my);
+                g.round(c, r, if hot { TAB_HOVER } else { BG }, 1.0);
+                g.outline(c, r, if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
+                let fg = if hot { TEXT } else { TEXT_DIM };
+                let th = (1.2 * g.scale).round().max(1.0);
+                let ix = (c.x + pad).round();
+                let cy = c.cy().round();
+                let arm = self.s(3.0).round();
+                let plus_y = cy - self.s(3.0).round();
+                g.fill(Rect::new(ix, plus_y - th / 2.0, arm * 2.0 + th, th), GREEN);
+                g.fill(Rect::new(ix + arm, plus_y - arm - th / 2.0, th, arm * 2.0 + th), GREEN);
+                g.fill(Rect::new(ix + arm + th, cy + self.s(3.5).round(), arm * 2.0 + th, th), RED);
+                let tx = ix + self.s(12.0) + self.s(6.0);
+                g.text(CHANGES_LABEL, &g.ui_small, Rect::new(tx, c.y, c.right() - tx, c.h), fg);
+            }
+
+            // Ports: a green dot, "localhost:3000" and an arrow (opens the browser).
+            for (pr, p) in &t.ports[..t.n_ports] {
+                let hot = pr.contains(mx, my);
+                g.round(*pr, r, if hot { TAB_HOVER } else { BG }, 1.0);
+                g.outline(*pr, r, if hot { GREEN.mix(BORDER, 0.4) } else { BORDER }, 1.0);
+                let fg = if hot { TEXT } else { TEXT_DIM };
+                let dot = self.s(3.0);
+                g.circle(pr.x + pad + dot, pr.cy(), dot, GREEN);
+                let tx = pr.x + pad + self.s(12.0);
+                let label = port_label(*p);
+                let lw = g.measure(&label, &g.ui_small);
+                g.text(&label, &g.ui_small, Rect::new(tx, pr.y, lw + 2.0, pr.h), fg);
+                g.text("↗", &g.ui_small, Rect::new(tx + lw + self.s(5.0), pr.y, self.s(12.0), pr.h), fg);
             }
         }
     }

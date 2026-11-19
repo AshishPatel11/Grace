@@ -4,11 +4,15 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod ask;
+mod changes;
 mod chat;
 mod selmem;
 mod compose;
 mod composebox;
 mod config;
+mod diffview;
+mod finder;
 mod folders;
 mod gfx;
 mod images;

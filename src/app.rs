@@ -118,6 +118,12 @@ pub struct Ui {
     pub folder_menu: Vec<String>,
     /// Copy buttons on code blocks drawn in the last frame.
     pub code_buttons: Vec<crate::chat::CodeHit>,
+    /// The Claude panes listed in the last "Ask Claude about this" menu (see ask.rs).
+    pub ask_targets: Vec<u64>,
+    /// The "find an old chat" box, when open (finder.rs).
+    pub finder: Option<crate::finder::Finder>,
+    /// The diff viewer, when open (diffview.rs).
+    pub diff: Option<crate::diffview::DiffView>,
     /// The Copy button just clicked (shows "Copied" for a moment).
     pub copied: Option<(usize, Instant)>,
 }
@@ -196,6 +202,8 @@ pub struct App {
     pub perf: (u64, u64, u64, u64),
     /// Where the pictures of each chat are in its log (for previews).
     pub chat_images: HashMap<String, crate::images::ChatImages>,
+    /// Every Claude chat on this PC, for the "find an old chat" box (finder.rs).
+    pub chat_index: crate::finder::Shared,
     /// Code blocks of each Claude chat, read from its log (for code boxes and Copy).
     pub chat_code: HashMap<String, crate::chat::CodeIndex>,
     /// Thumbnails that could not be loaded, and when we last tried (retry after a while).
@@ -250,6 +258,7 @@ impl App {
             perf: (0, 0, 0, 0),
             chat_images: HashMap::new(),
             chat_code: HashMap::new(),
+            chat_index: crate::finder::new_index(),
             thumb_miss: HashMap::new(),
             voice: None,
             voice_seq: 0,
@@ -262,7 +271,7 @@ impl App {
         (v * self.gfx.scale).round()
     }
 
-    fn id(&mut self) -> u64 {
+    pub(crate) fn id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
     }
@@ -434,7 +443,7 @@ impl App {
         }
     }
 
-    fn add_pane(&mut self, profile: &str, cwd: Option<String>) -> u64 {
+    pub(crate) fn add_pane(&mut self, profile: &str, cwd: Option<String>) -> u64 {
         let id = self.id();
         self.panes.insert(id, Pane::new(id, profile, cwd));
         id
@@ -549,7 +558,7 @@ impl App {
         self.focused_id().and_then(|id| self.panes.get(&id))
     }
 
-    fn tab_of(&self, pane: u64) -> Option<usize> {
+    pub fn tab_of(&self, pane: u64) -> Option<usize> {
         self.tabs.iter().position(|t| t.root.leaves().contains(&pane))
     }
 
@@ -1116,6 +1125,7 @@ impl App {
     fn on_stats(&mut self, snap: procmon::Snapshot) {
         self.sys = snap.sys;
         let mut alerts = Vec::new();
+        let mut ports_changed = false;
         for (id, mut st) in snap.panes {
             let Some(p) = self.panes.get_mut(&id) else { continue };
             if p.live.is_none() {
@@ -1140,6 +1150,8 @@ impl App {
             }
             p.prev_status = new.clone();
             let waiting = st.claude.as_ref().map(|c| c.waiting_for.clone()).unwrap_or_default();
+            // A dev server started or stopped: the toolbar's port buttons change.
+            ports_changed |= p.stats.ports != st.ports;
             p.stats = st;
             let name = p.display_title();
             match (old.as_deref(), new.as_deref()) {
@@ -1150,6 +1162,10 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        if ports_changed {
+            self.relayout();
+            self.invalidate();
         }
         for (id, kind, body) in alerts {
             if let Some(ti) = self.tab_of(id) {
@@ -1311,7 +1327,9 @@ impl App {
                 "modal": self.ui.modal.as_ref().map(|p| p.title.clone()),
                 "modal_album": self.ui.modal_album.len(),
                 "tools": self.ui.tools.iter().map(|t| json!({"mic": [t.mic.x, t.mic.y, t.mic.w, t.mic.h], "rich": [t.rich.x, t.rich.y, t.rich.w, t.rich.h],
-                    "folder": [t.folder.x, t.folder.y, t.folder.w, t.folder.h], "folder_path": self.pane_folder(t.id)})).collect::<Vec<_>>(),
+                    "folder": [t.folder.x, t.folder.y, t.folder.w, t.folder.h], "folder_path": self.pane_folder(t.id),
+                    "changes": [t.changes.x, t.changes.y, t.changes.w, t.changes.h],
+                    "ports": t.ports[..t.n_ports].iter().map(|(r, p)| json!({"port": p, "rect": [r.x, r.y, r.w, r.h]})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             }),
             // Move the mouse to a point (tests), and say which picture preview it shows.
             "hover" => {
@@ -1333,6 +1351,72 @@ impl App {
             "detach" => {
                 let ok = self.tab_arg(j).and_then(|i| self.tabs.get(i)).map(|t| t.focus).is_some_and(|id| self.detach_pane(id));
                 json!({"ok": ok, "tabs": self.tabs.len()})
+            }
+            // Test copy only: open a menu and pick the line that contains "label" (no label:
+            // just list the lines). {"cmd":"menu_pick","menu":"pane"|"changes"|"folder","tab":2,"label":"..."}
+            "menu_pick" if crate::dev() => {
+                let Some(ti) = self.tab_arg(j) else { return json!({"ok": false, "error": "no such tab"}) };
+                let id = self.tabs[ti].focus;
+                match j.get("menu").and_then(|v| v.as_str()).unwrap_or("pane") {
+                    "folder" => self.folder_menu(id, 0, 0),
+                    _ => self.pane_menu(id, 0, 0),
+                }
+                let Some(pos) = self.pending.iter().rposition(|d| matches!(d, Deferred::Menu { .. })) else {
+                    return json!({"ok": false, "error": "no menu (see the toast)", "toast": self.toast.as_ref().map(|t| t.0.clone())});
+                };
+                let Deferred::Menu { items, ctx, .. } = self.pending.remove(pos) else { unreachable!() };
+                let labels: Vec<String> = items.iter().filter(|i| i.0 != 0).map(|i| i.1.clone()).collect();
+                let want = j.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let pick = items.iter().find(|(c, l)| !want.is_empty() && *c != 0 && *c < SUB_END && l.contains(want)).map(|x| x.0);
+                if let Some(cmd) = pick {
+                    self.menu_command(ctx, cmd);
+                }
+                json!({"ok": true, "picked": pick, "items": labels, "toast": self.toast.as_ref().map(|t| t.0.clone())})
+            }
+            // The diff viewer (tests): {"cmd":"diff","tab":2} opens it; then "key" moves in it.
+            // Returns the files and the first lines shown.
+            "diff" => {
+                let Some(ti) = self.tab_arg(j) else { return json!({"ok": false, "error": "no such tab"}) };
+                if self.ui.diff.is_none() {
+                    let id = self.tabs[ti].focus;
+                    self.open_diff_view(id);
+                }
+                match &self.ui.diff {
+                    Some(v) => json!({"ok": true, "cur": v.cur, "top": v.top,
+                        "files": v.files.iter().map(|f| format!("{} {}", f.letter(), f.path)).collect::<Vec<_>>(),
+                        "lines": v.lines.iter().skip(v.top).take(12).map(|l| format!("{:?} {:?} {:?} {}", l.kind, l.old, l.new, l.text)).collect::<Vec<_>>()}),
+                    None => json!({"ok": false, "toast": self.toast.as_ref().map(|t| t.0.clone())}),
+                }
+            }
+            // Find an old chat (tests): {"cmd":"finder","query":"webhook"} opens the box with that
+            // text and lists the results; {"cmd":"finder","pick":0} opens one; {"cmd":"finder"} closes.
+            "finder" => {
+                if let Some(n) = j.get("pick").and_then(|v| v.as_u64()) {
+                    let hit = self.ui.finder.as_ref().and_then(|f| f.hits.get(n as usize).cloned());
+                    return match hit {
+                        Some(h) => {
+                            self.finder_open(&h);
+                            json!({"ok": true, "opened": h.title, "toast": self.toast.as_ref().map(|t| t.0.clone())})
+                        }
+                        None => json!({"ok": false, "error": "no such result"}),
+                    };
+                }
+                match j.get("query").and_then(|v| v.as_str()) {
+                    Some(q) => {
+                        if self.ui.finder.is_none() {
+                            self.open_finder();
+                        }
+                        if let Some(f) = &mut self.ui.finder {
+                            f.query = q.to_string();
+                        }
+                        self.finder_search();
+                    }
+                    None => self.ui.finder = None,
+                }
+                self.invalidate();
+                let ix = self.chat_index.lock().unwrap();
+                json!({"ok": true, "chats": ix.chats.len(), "busy": ix.busy,
+                       "hits": self.ui.finder.as_ref().map(|f| f.hits.iter().take(10).map(|h| json!([h.title, h.cwd, h.snippet])).collect::<Vec<_>>())})
             }
             // Mouse steps for tests: {"cmd":"mouse","do":"down"|"move"|"up"|"wheel","x":..,"y":..,"delta":120}.
             "mouse" => {
@@ -1562,6 +1646,13 @@ impl App {
         if vk == VK_ESCAPE && self.stop_voice() {
             return true;
         }
+        // The "find an old chat" box and the diff viewer take the keys while open.
+        if self.ui.finder.is_some() {
+            return self.finder_key(vk, ctrl);
+        }
+        if self.ui.diff.is_some() {
+            return self.diff_key(vk);
+        }
 
         // Typing in a tab name.
         if let Some((idx, text)) = &mut self.ui.rename {
@@ -1624,6 +1715,7 @@ impl App {
                 0x49 => self.box_toggle(), // I
                 0x4D => self.toggle_voice(), // M: the mic
                 0x4F => self.pick_folder_for_claude(), // O
+                0x50 => self.open_finder(), // P: find an old chat
                 0x54 => {
                     let p = self.cfg.default_profile.clone();
                     self.new_tab(&p, None)
@@ -1774,6 +1866,9 @@ impl App {
         } else {
             String::from_utf16_lossy(&[ch])
         };
+        if self.finder_char(&s) {
+            return;
+        }
         if let Some((_, text)) = &mut self.ui.rename {
             if !s.chars().any(|c| c.is_control()) {
                 text.push_str(&s);
@@ -2007,6 +2102,7 @@ impl App {
         items.extend(self.folder_items_for_new_tab());
         items.push((0, String::new()));
         items.push((100, "Bring in chats open in other windows (asleep)".into()));
+        items.push((102, "Find an old chat…\tCtrl+Shift+P".into()));
         let (x, y) = self.to_screen(r.x, r.bottom());
         self.pending.push(Deferred::Menu { items, x, y, ctx: MenuCtx::Profiles });
     }
@@ -2028,6 +2124,10 @@ impl App {
             MenuCtx::Profiles => {
                 if cmd == 101 {
                     self.pick_folder_for_claude();
+                    return;
+                }
+                if cmd == 102 {
+                    self.open_finder();
                     return;
                 }
                 if let Some(d) = self.recent_from_menu(cmd) {
@@ -2053,6 +2153,7 @@ impl App {
                     self.join_menu_pick(cmd, target);
                 }
             }
+            MenuCtx::Pane(id) if (crate::ask::ASK_BASE..JOIN_RIGHT).contains(&cmd) => self.ask_menu_pick(id, cmd),
             MenuCtx::Pane(id) if cmd >= JOIN_RIGHT => {
                 self.join_menu_pick(cmd, id);
             }
@@ -2166,13 +2267,14 @@ impl App {
     }
 
     pub fn pane_menu(&mut self, id: u64, x: i32, y: i32) {
-        let mut items = vec![
-            (1, "Copy\tCtrl+C".to_string()),
-            (2, "Paste\tCtrl+V".into()),
+        let mut items = vec![(1, "Copy\tCtrl+C".to_string()), (2, "Paste\tCtrl+V".into())];
+        // With text selected: "Ask Claude about this" > a Claude tab (ask.rs).
+        items.extend(self.ask_menu_items(id));
+        items.extend([
             (0, String::new()),
             (3, "Split right\tCtrl+Shift+D".into()),
             (4, "Split down\tCtrl+Shift+E".into()),
-        ];
+        ]);
         let ti = self.tab_of(id).unwrap_or(self.active);
         items.extend(self.join_menu_items(ti));
         if self.tabs.get(ti).is_some_and(|t| t.root.leaves().len() > 1) {
@@ -2283,6 +2385,14 @@ impl App {
         self.ui.mouse = (x, y);
         // A picture opened big: a click anywhere closes it.
         if self.close_modal() {
+            return;
+        }
+        if self.ui.finder.is_some() {
+            self.finder_mouse_down(x, y);
+            return;
+        }
+        if self.ui.diff.is_some() {
+            self.diff_mouse_down(x, y);
             return;
         }
         self.guess_clear();
@@ -2720,7 +2830,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
 
     /// The selected text of a pane. In full-screen programs part of it may have scrolled
     /// off the screen; selmem.rs kept those rows.
-    fn selection_text(&self, id: u64) -> Option<String> {
+    pub fn selection_text(&self, id: u64) -> Option<String> {
         let p = self.panes.get(&id)?;
         let t = p.live.as_ref()?.term.lock();
         if p.selmem.active() && t.mode().contains(TermMode::ALT_SCREEN) {
@@ -2741,6 +2851,9 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
     }
 
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16) {
+        if self.finder_wheel(delta) || self.diff_wheel(delta) {
+            return;
+        }
         if self.box_wheel(x, y, delta) {
             return;
         }
@@ -2809,7 +2922,8 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             return if b.mic.contains(x, y) { 2 } else { 1 };
         }
         if let Some(t) = self.toolbar_at(x, y) {
-            return if t.mic.contains(x, y) || t.rich.contains(x, y) || t.folder.contains(x, y) { 2 } else { 0 };
+            let port = t.ports[..t.n_ports].iter().any(|(r, _)| r.contains(x, y));
+            return if t.mic.contains(x, y) || t.rich.contains(x, y) || t.folder.contains(x, y) || t.changes.contains(x, y) || port { 2 } else { 0 };
         }
         if self.thumb_at(x, y).is_some() || self.ui.code_buttons.iter().any(|b| b.rect.contains(x, y)) {
             return 2;

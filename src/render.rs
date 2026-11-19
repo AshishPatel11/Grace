@@ -310,6 +310,8 @@ impl App {
         self.paint_bar();
         self.paint_tooltip();
         self.paint_preview();
+        self.paint_diff();
+        self.paint_finder();
         self.paint_toast();
         self.paint_modal();
         self.schedule_blink();

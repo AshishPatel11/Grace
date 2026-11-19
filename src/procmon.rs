@@ -32,6 +32,8 @@ pub struct PaneStats {
     /// Biggest processes in the tree: (name, bytes).
     pub top: Vec<(String, u64)>,
     pub claude: Option<ClaudeInfo>,
+    /// TCP ports the tab's programs listen on (a dev server), sorted.
+    pub ports: Vec<u16>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,6 +105,49 @@ fn processes(buf: &mut Vec<u8>) -> HashMap<u32, Proc> {
     out
 }
 
+/// The TCP ports each process listens on (IPv4 and IPv6): process id -> ports.
+/// One Windows call per kind; no process is started.
+fn listening(buf: &mut Vec<u32>) -> HashMap<u32, Vec<u16>> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+    };
+    let mut out: HashMap<u32, Vec<u16>> = HashMap::new();
+    // The port is in network byte order in the low 16 bits.
+    let port = |v: u32| (((v & 0xFF) << 8) | ((v >> 8) & 0xFF)) as u16;
+    for af in [2u32, 23u32] {
+        // AF_INET, AF_INET6
+        loop {
+            let mut size = (buf.len() * 4) as u32;
+            let r = unsafe { GetExtendedTcpTable(Some(buf.as_mut_ptr() as *mut _), &mut size, false, af, TCP_TABLE_OWNER_PID_LISTENER, 0) };
+            if r == 122 {
+                // ERROR_INSUFFICIENT_BUFFER
+                buf.resize(size as usize / 4 + 1024, 0);
+                continue;
+            }
+            if r != 0 {
+                break;
+            }
+            // The table: a count, then the rows (u32 fields only, so a u32 buffer lines up).
+            let n = buf[0] as usize;
+            let base = unsafe { buf.as_ptr().add(1) } as *const u8;
+            for i in 0..n {
+                let (pid, p) = unsafe {
+                    if af == 2 {
+                        let row = &*(base as *const MIB_TCPROW_OWNER_PID).add(i);
+                        (row.dwOwningPid, port(row.dwLocalPort))
+                    } else {
+                        let row = &*(base as *const MIB_TCP6ROW_OWNER_PID).add(i);
+                        (row.dwOwningPid, port(row.dwLocalPort))
+                    }
+                };
+                out.entry(pid).or_default().push(p);
+            }
+            break;
+        }
+    }
+    out
+}
+
 fn sys_mem(self_mem: u64) -> SysMem {
     let mut m = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
     unsafe {
@@ -156,6 +201,7 @@ pub fn start(targets: Arc<Mutex<Vec<(u64, u32)>>>, tx: Sender<AppEvent>) {
         .name("procmon".into())
         .spawn(move || {
             let mut buf = vec![0u8; 1 << 20];
+            let mut tcp_buf = vec![0u32; 4096];
             let me = std::process::id();
             // The full process list is the costly part, so it runs every 4th second.
             // Claude's status files are tiny, so they are read every second (fast alerts).
@@ -181,6 +227,7 @@ pub fn start(targets: Arc<Mutex<Vec<(u64, u32)>>>, tx: Sender<AppEvent>) {
                 }
                 last_list = list.clone();
                 let procs = processes(&mut buf);
+                let ports = listening(&mut tcp_buf);
                 let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
                 for (pid, p) in &procs {
                     kids.entry(p.ppid).or_default().push(*pid);
@@ -202,6 +249,12 @@ pub fn start(targets: Arc<Mutex<Vec<(u64, u32)>>>, tx: Sender<AppEvent>) {
                             continue;
                         }
                         st.mem += p.private;
+                        // Claude's own ports are not dev servers.
+                        if !p.name.eq_ignore_ascii_case("claude.exe") {
+                            if let Some(ps) = ports.get(&pid) {
+                                st.ports.extend(ps);
+                            }
+                        }
                         *by_name.entry(p.name.clone()).or_default() += p.private;
                         if p.name.eq_ignore_ascii_case("claude.exe") && claude.is_none_or(|(_, c)| p.created > c) {
                             claude = Some((pid, p.created));
@@ -216,6 +269,8 @@ pub fn start(targets: Arc<Mutex<Vec<(u64, u32)>>>, tx: Sender<AppEvent>) {
                     top.sort_by(|a, b| b.1.cmp(&a.1));
                     top.truncate(4);
                     st.top = top;
+                    st.ports.sort_unstable();
+                    st.ports.dedup();
                     st.claude = claude.and_then(|(pid, _)| read_session(pid));
                     snap.panes.push((pane, st));
                 }

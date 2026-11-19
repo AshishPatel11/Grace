@@ -68,6 +68,12 @@ pub fn wake_handled() {
 /// Set when a program printed something, so the screen must be redrawn.
 static OUTPUT_DIRTY: AtomicBool = AtomicBool::new(false);
 
+/// From another thread: something on screen changed, draw again soon.
+pub fn redraw_soon() {
+    OUTPUT_DIRTY.store(true, Ordering::Release);
+    wake();
+}
+
 pub fn take_output_dirty() -> bool {
     OUTPUT_DIRTY.swap(false, Ordering::AcqRel)
 }

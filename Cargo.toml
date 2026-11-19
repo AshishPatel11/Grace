@@ -51,6 +51,7 @@ features = [
   "Win32_Media",
   "Win32_Media_Audio",
   "Win32_Media_Speech",
+  "Win32_NetworkManagement_IpHelper",
   "Win32_System_Registry",
   "Foundation",
   "Globalization",

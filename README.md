@@ -61,6 +61,25 @@ about once a second just to show the git branch. Grace only draws when something
     - Typing `/` in an empty box sends it straight to Claude, so Claude's command list shows.
       Enter runs the command; Esc cancels it and clears it from Claude's prompt.
     - While Claude asks you something (a permission, a choice), every key goes to Claude.
+- **Find any old chat** (Ctrl+Shift+P, or the ⌄ next to + > Find an old chat). A search box
+  over every Claude chat on this PC, in every project, not only the open tabs. Type a few words;
+  chats with the words in their title come first, then the ones where you or Claude wrote them
+  (with the words around them). Enter opens the chat as a sleeping tab (0 MB) in its own folder;
+  press Enter there to continue it. A chat that is already a tab is just shown.
+  - The first search reads all the chat logs in the background (measured: 51 chats, 887 MB, 2.3 s)
+    and keeps a small index in `%APPDATA%\Grace\chat_index.json` (786 KB). After that only the new
+    part of each log is read. Grace used 52 MB in total with the index loaded.
+- **Changes** (toolbar, in a git folder): shows what changed since the last commit, inside Grace.
+  The changed files are on the left (+/− lines each); the chosen file's changes on the right,
+  removed lines red and added lines green, with old and new line numbers. ←→ switch files,
+  ↑↓ / wheel / PgUp / PgDn scroll, Esc closes. git runs only when you open it, never in the background.
+- **Dev servers on the toolbar.** When a program in a tab listens on a port (`npm run dev`,
+  `python -m http.server`), a "● localhost:3000 ↗" button shows up; click it to open the browser.
+  The process watcher asks Windows which ports the tab's programs listen on (no process started).
+- **Ask Claude about this.** Select text in any tab (an error in PowerShell), right-click > Ask
+  Claude about this > pick a Claude tab. The text goes into that Claude's input in a code block,
+  with the tab it came from, and that tab comes to the front. Nothing is sent: type your question
+  and press Enter.
 - **Open Claude in another folder.** Claude cannot move to another folder once it runs (its chat
   belongs to the folder it started in), so this opens a NEW tab with a fresh Claude there; the chat
   you were in keeps running. Three ways: the folder button on the toolbar (it shows the tab's folder;
@@ -142,6 +161,7 @@ about once a second just to show the git branch. Grace only draws when something
 |---|---|
 | Ctrl+Shift+T | New tab (default profile = Claude) |
 | Ctrl+Shift+O | Open Claude in another folder (new tab) |
+| Ctrl+Shift+P | Find an old chat (any project) |
 | Ctrl+Shift+I | Open / close Rich input for this tab |
 | Ctrl+Shift+M | Mic: start / stop listening (Esc also stops) |
 | Hold Right Alt | Push to talk: listens while held, types the words when you let go |
@@ -234,6 +254,9 @@ its own pipe (`\\.\pipe\grace-dev-<username>`) and its own settings folder
 (`%APPDATA%\Grace-dev`). It opens behind other windows and never takes the keyboard.
 Extra pipe commands for tests: `{"cmd":"type","text":"..."}`, `{"cmd":"key","vk":13,"shift":true}`,
 `{"cmd":"box"}` (box text, caret, selection), `{"cmd":"boxhit","x":..,"y":..}`.
+`{"cmd":"finder","query":"webhook"}` searches old chats, `{"cmd":"finder","pick":0}` opens one;
+`{"cmd":"diff","tab":2}` opens the diff viewer; `{"cmd":"menu_pick","menu":"pane","label":"..."}`
+picks a right-click menu line; `{"cmd":"mouse","do":"down","x":..,"y":..}` (down/move/up/wheel).
 `{"cmd":"dump","styles":true}` also gives each row's colours and what the chat look found
 (`chat`: code boxes, tool rails, headings; `code_buttons`: where the Copy buttons are).
 Mic tests: `{"cmd":"voice","wav":"C:/say.wav"}` makes the mic listen to a .wav file (test copy

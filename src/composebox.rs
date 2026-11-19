@@ -248,6 +248,14 @@ impl App {
     }
 
     /// Paste the clipboard into the box. A picture goes to Claude (Alt+V), like before.
+    /// Put text into pane `id`'s box at the caret (like a paste).
+    pub fn box_insert(&mut self, id: u64, text: &str) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.compose.insert(text);
+        }
+        self.box_changed(id);
+    }
+
     pub fn box_paste(&mut self, id: u64) {
         match win::clipboard_text(self.hwnd) {
             Some(t) if !t.is_empty() => {
