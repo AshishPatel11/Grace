@@ -202,14 +202,42 @@ impl App {
         g.text(&s, &g.ui_small, Rect::new(px, t.rect.y, w, t.rect.h), c);
     }
 
+    /// The hover key of a toolbar button (fade.rs): 1 mic, 2 Rich input, 3 folder,
+    /// 4 Changes, 5.. ports.
+    pub fn tool_key(id: u64, slot: u64) -> u64 {
+        5 << 40 | id << 8 | slot
+    }
+
+    /// Which toolbar button is at (x, y), as a hover key (0 = none).
+    pub fn tool_hover_key(&self, x: f32, y: f32) -> u64 {
+        let Some(t) = self.toolbar_at(x, y) else { return 0 };
+        let slot = if t.mic.contains(x, y) {
+            1
+        } else if t.rich.contains(x, y) {
+            2
+        } else if t.folder.w > self.s(40.0) && t.folder.contains(x, y) {
+            3
+        } else if t.changes.w > 0.0 && t.changes.contains(x, y) {
+            4
+        } else if let Some(i) = t.ports[..t.n_ports].iter().position(|(r, _)| r.contains(x, y)) {
+            5 + i as u64
+        } else {
+            return 0;
+        };
+        Self::tool_key(t.id, slot)
+    }
+
     pub fn paint_toolbars(&self) {
         let g = &self.gfx;
-        let (mx, my) = self.ui.mouse;
         let r = self.s(5.0);
+        // How lit a button is (0 = resting, 1 = mouse on it), easing in and out.
+        let lit = |id: u64, slot: u64| self.hover_fade.amount(Self::tool_key(id, slot));
+        let chip_fill = |t: f32| BG.mix(TAB_HOVER, t);
+        let chip_edge = |t: f32| BORDER.mix(TEXT_DIM.mix(BORDER, 0.5), t);
         for t in &self.ui.tools {
             let open = self.ui.boxes.iter().any(|b| b.id == t.id);
             // Mic: an icon-only chip. Red while it listens.
-            let hot = t.mic.contains(mx, my);
+            let hot = lit(t.id, 1) > 0.5;
             let (fill, icon) = self.mic_colors(t.id, hot);
             g.round(t.mic, r, fill.unwrap_or(BG), 1.0);
             g.outline(t.mic, r, if fill.is_some() && !hot { fill.unwrap() } else if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
@@ -217,11 +245,11 @@ impl App {
             self.paint_voice_status(t);
 
             // Rich input: a small text-box icon, the label, and its keys (dimmer).
-            let hot = t.rich.contains(mx, my);
-            let border = if open { ACCENT.mix(BORDER, 0.45) } else if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER };
-            g.round(t.rich, r, if hot { TAB_HOVER } else { BG }, 1.0);
+            let f = lit(t.id, 2);
+            let border = if open { ACCENT.mix(BORDER, 0.45) } else { chip_edge(f) };
+            g.round(t.rich, r, chip_fill(f), 1.0);
             g.outline(t.rich, r, border, 1.0);
-            let fg = if open || hot { TEXT } else { TEXT_DIM };
+            let fg = if open { TEXT } else { TEXT_DIM.mix(TEXT, f) };
             let pad = self.s(8.0);
             let iw = self.s(14.0);
             let ih = self.s(10.0);
@@ -237,10 +265,10 @@ impl App {
 
             // Folder: a folder icon and the folder's name.
             if t.folder.w > self.s(40.0) {
-                let hot = t.folder.contains(mx, my);
-                g.round(t.folder, r, if hot { TAB_HOVER } else { BG }, 1.0);
-                g.outline(t.folder, r, if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
-                let fg = if hot { TEXT } else { TEXT_DIM };
+                let f = lit(t.id, 3);
+                g.round(t.folder, r, chip_fill(f), 1.0);
+                g.outline(t.folder, r, chip_edge(f), 1.0);
+                let fg = TEXT_DIM.mix(TEXT, f);
                 let (iw, ih) = (self.s(14.0).round(), self.s(10.0).round());
                 let ix = (t.folder.x + pad).round();
                 let iy = (t.folder.cy() - ih / 2.0 + self.s(1.0)).round();
@@ -254,10 +282,10 @@ impl App {
             // Changes: a small "+" over a "−", like a diff, and the label.
             if t.changes.w > 0.0 {
                 let c = t.changes;
-                let hot = c.contains(mx, my);
-                g.round(c, r, if hot { TAB_HOVER } else { BG }, 1.0);
-                g.outline(c, r, if hot { TEXT_DIM.mix(BORDER, 0.5) } else { BORDER }, 1.0);
-                let fg = if hot { TEXT } else { TEXT_DIM };
+                let f = lit(t.id, 4);
+                g.round(c, r, chip_fill(f), 1.0);
+                g.outline(c, r, chip_edge(f), 1.0);
+                let fg = TEXT_DIM.mix(TEXT, f);
                 let th = (1.2 * g.scale).round().max(1.0);
                 let ix = (c.x + pad).round();
                 let cy = c.cy().round();
@@ -271,18 +299,18 @@ impl App {
             }
 
             // Ports: a green dot, "localhost:3000" and an arrow (opens the browser).
-            for (pr, p) in &t.ports[..t.n_ports] {
-                let hot = pr.contains(mx, my);
-                g.round(*pr, r, if hot { TAB_HOVER } else { BG }, 1.0);
-                g.outline(*pr, r, if hot { GREEN.mix(BORDER, 0.4) } else { BORDER }, 1.0);
-                let fg = if hot { TEXT } else { TEXT_DIM };
+            for (k, (pr, p)) in t.ports[..t.n_ports].iter().enumerate() {
+                let f = lit(t.id, 5 + k as u64);
+                g.round(*pr, r, chip_fill(f), 1.0);
+                g.outline(*pr, r, BORDER.mix(GREEN.mix(BORDER, 0.4), f), 1.0);
+                let fg = TEXT_DIM.mix(TEXT, f);
                 let dot = self.s(3.0);
                 g.circle(pr.x + pad + dot, pr.cy(), dot, GREEN);
                 let tx = pr.x + pad + self.s(12.0);
                 let label = port_label(*p);
                 let lw = g.measure(&label, &g.ui_small);
                 g.text(&label, &g.ui_small, Rect::new(tx, pr.y, lw + 2.0, pr.h), fg);
-                g.text("↗", &g.ui_small, Rect::new(tx + lw + self.s(5.0), pr.y, self.s(12.0), pr.h), fg);
+                g.text(crate::linkmenu::I_OPEN_SMALL, &g.icons_small, Rect::new(tx + lw + self.s(5.0), pr.y, self.s(11.0), pr.h), fg);
             }
         }
     }

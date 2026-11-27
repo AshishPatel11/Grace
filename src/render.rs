@@ -308,6 +308,12 @@ impl App {
         }
         self.paint_search();
         self.paint_bar();
+        self.paint_caption();
+        if self.hover_fade.busy() {
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_ANIM, 15, None);
+            }
+        }
         self.paint_tooltip();
         self.paint_preview();
         self.paint_diff();
@@ -758,7 +764,8 @@ impl App {
             let hit = crate::app::TabHit { rect: shift(hit.rect), close: shift(hit.close), badge: shift(hit.badge) };
             let r = hit.rect;
             let active = i == self.active;
-            let hover = r.contains(mx, my) && my < bar_bottom;
+            let fade = self.hover_fade.amount(self.tabs[i].id | 2 << 40);
+            let hover = fade > 0.0;
             if active {
                 // The page colour, a lighter edge on top and sides, and an accent line on top.
                 g.round(r, 8.0 * s, BG, 1.0);
@@ -768,8 +775,9 @@ impl App {
                 g.unclip();
                 g.round(Rect::new(r.x + 10.0 * s, r.y + 1.0, r.w - 20.0 * s, (2.5 * s).max(2.0)), 1.5 * s, ACCENT, 1.0);
             } else if hover {
-                g.round(Rect::new(r.x + 2.0 * s, r.y + 3.0 * s, r.w - 4.0 * s, r.h - 8.0 * s), 7.0 * s, TAB_HOVER, 1.0);
-            } else if i + 1 != self.active && i + 1 < self.tabs.len() {
+                g.round(Rect::new(r.x + 2.0 * s, r.y + 3.0 * s, r.w - 4.0 * s, r.h - 8.0 * s), 7.0 * s, TAB_HOVER, fade);
+            }
+            if !active && fade < 1.0 && i + 1 != self.active && i + 1 < self.tabs.len() {
                 g.fill(Rect::new(r.right() + 1.0 * s, r.y + 10.0 * s, 1.0, r.h - 24.0 * s), BORDER);
             }
 
@@ -804,10 +812,8 @@ impl App {
             let warn = self.cfg.ram_warn_mb * 1_048_576;
             let mut text_end = hit.close.x - 4.0 * s;
             if mem > 0 {
-                let mut label = fmt_bytes(mem).replace(" GB", "G").replace(" MB", "M");
-                if self.refresh_hint(i) {
-                    label = format!("↻ {label}");
-                }
+                let label = fmt_bytes(mem).replace(" GB", "G").replace(" MB", "M");
+                let refresh = self.refresh_hint(i);
                 let (fg, bg) = if mem >= warn * 2 {
                     (RED, Some(RED))
                 } else if mem >= warn {
@@ -819,13 +825,25 @@ impl App {
                 if let Some(c) = bg {
                     g.round(b, b.h / 2.0, c, 0.18);
                 }
-                g.text(&label, &g.ui_center_small(), b, fg);
+                if refresh {
+                    // "Refresh frees RAM": a refresh icon before the number.
+                    let iw = 11.0 * s;
+                    let lw = g.measure(&label, &g.ui_small);
+                    let x0 = b.cx() - (iw + 3.0 * s + lw) / 2.0;
+                    g.text(crate::linkmenu::I_REFRESH, &g.icons_small, Rect::new(x0, b.y, iw, b.h), fg);
+                    g.text(&label, &g.ui_small, Rect::new(x0 + iw + 3.0 * s, b.y, lw + 2.0, b.h), fg);
+                } else {
+                    g.text(&label, &g.ui_center_small(), b, fg);
+                }
                 text_end = b.x - 4.0 * s;
             }
 
-            let mut title = self.tab_title(i);
+            let title = self.tab_title(i);
+            let mut tx = tx;
             if self.tabs[i].zoom.is_some() {
-                title = format!("⤢ {title}");
+                // One pane shown full size: a full-screen icon before the title.
+                g.text(crate::linkmenu::I_ZOOM, &g.icons_small, Rect::new(tx, cy - 6.0 * s, 12.0 * s, 12.0 * s), TEXT_DIM);
+                tx += 16.0 * s;
             }
             let title_r = Rect::new(tx, r.y, (text_end - tx).max(10.0), r.h - if active { 0.0 } else { 4.0 * s });
             if let Some((ri, text)) = &self.ui.rename {
@@ -837,7 +855,7 @@ impl App {
                     continue;
                 }
             }
-            let tc = if active { HEAD_TEXT } else { TEXT_DIM.mix(TEXT, if hover { 0.5 } else { 0.0 }) };
+            let tc = if active { HEAD_TEXT } else { TEXT_DIM.mix(TEXT, 0.5 * fade) };
             g.text(&title, if active || alert != Alert::None { &g.ui_bold } else { &g.ui }, title_r, tc);
 
             if active || hover {
@@ -849,7 +867,7 @@ impl App {
                     g.round(c, 4.0 * s, BORDER, 1.0);
                 }
                 let k = 4.0 * s;
-                let col = if c.contains(mx, my) { TEXT } else { TEXT_DIM };
+                let col = if c.contains(mx, my) { TEXT } else if active { TEXT_DIM } else { BAR.mix(TEXT_DIM, fade) };
                 g.line(c.cx() - k, c.cy() - k, c.cx() + k, c.cy() + k, 1.3 * s, col);
                 g.line(c.cx() + k, c.cy() - k, c.cx() - k, c.cy() + k, 1.3 * s, col);
             }
@@ -859,8 +877,9 @@ impl App {
         let pdx = self.ui.tab_slide.as_ref().map_or(0.0, |sl| (sl.plus_x - self.ui.plus.x) * (1.0 - sl.progress()));
         let moved = |r: Rect| Rect::new(r.x + pdx, r.y, r.w, r.h);
         for (r, plus) in [(moved(self.ui.plus), true), (moved(self.ui.menu), false)] {
-            if r.contains(mx, my) {
-                g.round(r, 6.0 * s, TAB_HOVER, 1.0);
+            let fade = self.hover_fade.amount(if plus { 3 << 40 } else { 4 << 40 });
+            if fade > 0.0 {
+                g.round(r, 6.0 * s, TAB_HOVER, fade);
             }
             let (cx, cy) = (r.cx(), r.cy() - 2.0 * s);
             if plus {

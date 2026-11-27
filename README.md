@@ -148,6 +148,13 @@ about once a second just to show the git branch. Grace only draws when something
   Chats then run in the classic mode, where the input box and status lines scroll away with the
   chat. When `~/.claude/settings.json` says `"tui": "fullscreen"`, Grace starts Claude with
   `CLAUDE_CODE_NO_FLICKER=1` (Claude's own override), so it stays full-screen.
+- **Tabs in the title bar.** Windows' own title bar is gone; the tab strip is the top of the
+  window, with Grace's own minimize / maximize / close (`src/titlebar.rs`). The free space after
+  the + button drags the window, double-click maximizes, right-click opens the window menu,
+  the top edge resizes, and hovering maximize shows Windows 11's snap layouts.
+- **Hover fades.** Tabs, the window buttons, + and the toolbar buttons fade their highlight in
+  and out (0.16 s) instead of snapping (`src/fade.rs`). Measured: 0.39 ms per frame on average
+  while hovering, and nothing extra drawn while idle.
 - **Tabs.** The open tab is joined to the page below it, with a light edge and an orange line on
   top; the others are plain until you point at them.
   - A tab closes when you **let go** of the button (on its ×, or the middle button anywhere on

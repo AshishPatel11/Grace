@@ -16,6 +16,10 @@ pub const I_CODE: char = '\u{E943}';
 pub const I_COPY: char = '\u{E8C8}';
 pub const I_FOLDER: char = '\u{E8B7}';
 pub const I_EXPLORER: char = '\u{EC50}';
+/// As text, for `Gfx::text`.
+pub const I_REFRESH: &str = "\u{E72C}";
+pub const I_ZOOM: &str = "\u{E740}";
+pub const I_OPEN_SMALL: &str = "\u{E8A7}";
 const I_GLOBE: char = '\u{E774}';
 const I_DOC: char = '\u{E8A5}';
 const I_PHOTO: char = '\u{EB9F}';

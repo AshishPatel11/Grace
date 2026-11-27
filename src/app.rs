@@ -128,6 +128,13 @@ pub struct Ui {
     pub jump: Vec<(u64, Rect)>,
     pub cards: Vec<(u64, Rect)>,
     pub tracking: bool,
+    /// The same for the parts of the window Windows treats as title bar (titlebar.rs).
+    pub nc_tracking: bool,
+    /// Minimize, maximize, close (titlebar.rs), and which one the mouse is on / pressed
+    /// (a WM_NCHITTEST code, 0 = none).
+    pub caption: [Rect; 3],
+    pub cap_hover: u32,
+    pub cap_press: u32,
     /// Typing boxes in the active tab.
     pub boxes: Vec<crate::composebox::BoxHit>,
     /// The picture under the mouse, shown as a preview.
@@ -215,6 +222,8 @@ pub struct App {
     pub sys: SysMem,
     pub ui: Ui,
     pub focused: bool,
+    /// The hover highlight that is fading in or out (fade.rs).
+    pub hover_fade: crate::fade::HoverFade,
     /// The cursor blink starts from here: it is reset when you type, click, or the
     /// cursor moves, so the cursor stays solid while you work (see `cursor_alpha`).
     pub blink_from: Instant,
@@ -266,6 +275,7 @@ impl App {
         procmon::start(targets.clone(), tx.clone());
         crate::ipc::start_server(tx.clone());
         Ok(App {
+            hover_fade: Default::default(),
             hwnd,
             cfg,
             gfx,
@@ -971,7 +981,11 @@ impl App {
         let sys_w = (150.0 * s).round();
         let btn = (28.0 * s).round();
         let left = (8.0 * s).round();
-        let avail = (w - left - sys_w - 2.0 * btn - 16.0 * s).max(100.0);
+        // Right side: RAM meter, then minimize / maximize / close. Keep a free strip after
+        // the + button: it is where you grab the window to move it.
+        let caps = 3.0 * (crate::titlebar::CAP_W * s).round();
+        let grab = (48.0 * s).round();
+        let avail = (w - left - sys_w - 2.0 * btn - 16.0 * s - caps - grab).max(100.0);
         let n = self.tabs.len().max(1) as f32;
         let tw = (avail / n).clamp(90.0 * s, 230.0 * s).floor();
         let mut x = left;
@@ -988,7 +1002,28 @@ impl App {
         let by = top + (h - btn) / 2.0;
         self.ui.plus = Rect::new(x + 4.0 * s, by, btn, btn);
         self.ui.menu = Rect::new(self.ui.plus.right(), by, (18.0 * s).round(), btn);
-        self.ui.sys = Rect::new(w - sys_w - 8.0 * s, top, sys_w, h);
+        self.ui.sys = Rect::new(w - caps - sys_w - 12.0 * s, top, sys_w, h);
+        self.layout_caption();
+    }
+
+    /// What a hover highlight belongs to at (x, y): a tab, +, the profile arrow (0 = none).
+    pub fn hover_key(&self, x: f32, y: f32) -> u64 {
+        if x < 0.0 {
+            return 0;
+        }
+        if y >= self.bar_h() {
+            return self.tool_hover_key(x, y);
+        }
+        if let Some(i) = self.ui.tabs.iter().position(|t| t.rect.contains(x, y)) {
+            return self.tabs.get(i).map_or(0, |t| t.id | 2 << 40);
+        }
+        if self.ui.plus.contains(x, y) {
+            return 3 << 40;
+        }
+        if self.ui.menu.contains(x, y) {
+            return 4 << 40;
+        }
+        0
     }
 
     pub fn text_origin(&self, r: Rect) -> (f32, f32) {
@@ -2809,6 +2844,8 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             return;
         }
         // Hover: picture previews, links, tabs.
+        let key = self.hover_key(x, y);
+        self.hover_fade.set(key);
         self.ui.preview = self.preview_at(x, y);
         self.hover_link(x, y);
         self.invalidate();

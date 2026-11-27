@@ -231,6 +231,9 @@ pub fn style_title_bar(hwnd: HWND, caption_bgr: u32, text_bgr: u32) {
         let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(20), &dark as *const _ as _, 4);
         let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(35), &caption_bgr as *const _ as _, 4);
         let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(36), &text_bgr as *const _ as _, 4);
+        // DWMWA_BORDER_COLOR: Windows 11's 1 px window edge, in the tab strip's edge colour.
+        let border = crate::theme::TAB_EDGE.bgr();
+        let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(34), &border as *const _ as _, 4);
     }
 }
 

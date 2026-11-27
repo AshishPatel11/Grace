@@ -63,6 +63,8 @@ pub struct Gfx {
     pub boxf: IDWriteTextFormat,
     /// Windows' icon font (Segoe Fluent Icons, or Segoe MDL2 Assets on Windows 10), centred.
     pub icons: IDWriteTextFormat,
+    /// The same at text size, for icons inside a line of small text.
+    pub icons_small: IDWriteTextFormat,
     face: IDWriteFontFace,
     pub cell_w: f32,
     pub cell_h: f32,
@@ -123,7 +125,8 @@ impl Gfx {
                 ui_small_center: dummy.clone(),
                 heads: vec![dummy.clone(), dummy.clone()],
                 boxf: dummy.clone(),
-                icons: dummy,
+                icons: dummy.clone(),
+                icons_small: dummy,
                 face,
                 cell_w: 8.0,
                 cell_h: 16.0,
@@ -224,6 +227,7 @@ impl Gfx {
             self.ui_small_center = self.ui_format(10.5 * self.scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, true)?;
             let icon_font = if self.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" };
             self.icons = self.ui_format_in(icon_font, 14.0 * self.scale, DWRITE_FONT_WEIGHT_NORMAL, true)?;
+            self.icons_small = self.ui_format_in(icon_font, 10.0 * self.scale, DWRITE_FONT_WEIGHT_NORMAL, true)?;
             self.heads = vec![
                 self.ui_format(px * 1.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,
                 self.ui_format(px * 1.22, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,

@@ -11,6 +11,8 @@ mod selmem;
 mod compose;
 mod composebox;
 mod config;
+mod fade;
+mod titlebar;
 mod linkmenu;
 mod diffview;
 mod finder;
@@ -43,7 +45,7 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, PAINTS
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT, COMPOSITIONFORM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -125,6 +127,13 @@ fn drain_or_retry(hwnd: HWND) {
     }
 }
 
+/// The resize border's thickness (it sits off screen at the top when maximized).
+fn frame_y(hwnd: HWND) -> i32 {
+    use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    unsafe { GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) }
+}
+
 fn lparam_xy(lp: LPARAM) -> (f32, f32) {
     let x = (lp.0 & 0xFFFF) as i16 as f32;
     let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f32;
@@ -150,6 +159,70 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             Some(0)
         }
         WM_ERASEBKGND => Some(1),
+        // No Windows title bar: the tab strip is the top of the window (titlebar.rs). Keep
+        // the side and bottom borders (resizing, shadow); when maximized, Windows puts the
+        // window's top edge off screen by the border size, so start below it.
+        WM_NCCALCSIZE if wp.0 != 0 => {
+            let p = &mut *(lp.0 as *mut NCCALCSIZE_PARAMS);
+            let top = p.rgrc[0].top;
+            let r = DefWindowProcW(hwnd, msg, wp, lp);
+            p.rgrc[0].top = top + if titlebar::maximized(hwnd) { frame_y(hwnd) } else { 0 };
+            Some(r.0)
+        }
+        WM_NCHITTEST => {
+            let hit = DefWindowProcW(hwnd, msg, wp, lp);
+            if hit.0 != HTCLIENT as isize {
+                return Some(hit.0); // the side and bottom borders
+            }
+            let (sx, sy) = lparam_xy(lp);
+            let mut p = windows::Win32::Foundation::POINT { x: sx as i32, y: sy as i32 };
+            let _ = ScreenToClient(hwnd, &mut p);
+            let dpi = GetDpiForWindow(hwnd) as f32 / 96.0;
+            if !titlebar::maximized(hwnd) && (p.y as f32) < (5.0 * dpi).round() {
+                return Some(HTTOP as isize);
+            }
+            Some(with_app(|a| a.caption_hit(p.x as f32, p.y as f32)).unwrap_or(HTCLIENT) as isize)
+        }
+        WM_NCMOUSEMOVE => {
+            let hit = wp.0 as u32;
+            let on_button = titlebar::CAP_HITS.contains(&hit);
+            with_app(|a| {
+                if !a.ui.nc_tracking {
+                    let mut t = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE | TME_NONCLIENT,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut t);
+                    a.ui.nc_tracking = true;
+                }
+                // Off the tabs: nothing in the strip is under the mouse any more.
+                a.ui.mouse = (-1.0, -1.0);
+                if !a.caption_hover(hit) && !on_button {
+                    a.hover_fade.set(0);
+                    a.invalidate();
+                }
+            });
+            if on_button { Some(0) } else { None }
+        }
+        0x02A2 => {
+            // WM_NCMOUSELEAVE
+            with_app(|a| {
+                a.ui.nc_tracking = false;
+                a.caption_hover(0);
+            });
+            Some(0)
+        }
+        WM_NCLBUTTONDOWN if titlebar::CAP_HITS.contains(&(wp.0 as u32)) => {
+            with_app(|a| a.caption_press(wp.0 as u32));
+            Some(0)
+        }
+        WM_NCLBUTTONUP => {
+            let done = with_app(|a| a.caption_release(wp.0 as u32)).unwrap_or(false);
+            if done { Some(0) } else { None }
+        }
+        WM_NCLBUTTONDBLCLK if titlebar::CAP_HITS.contains(&(wp.0 as u32)) => Some(0),
         WM_SIZE if wp.0 == 1 => Some(0), // minimized: keep the terminals at their size
         WM_SIZE => {
             let w = (lp.0 & 0xFFFF) as u32;
@@ -264,6 +337,7 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lp);
             with_app(|a| {
+                a.caption_hover(0);
                 if !a.ui.tracking {
                     let mut t = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -283,6 +357,9 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             with_app(|a| {
                 a.ui.tracking = false;
                 a.ui.mouse = (-1.0, -1.0);
+                if a.ui.cap_hover == 0 {
+                    a.hover_fade.set(0);
+                }
                 a.ui.preview = None;
                 a.invalidate();
             });
@@ -553,6 +630,8 @@ fn main() {
         };
         pane::set_main_hwnd(hwnd);
         win::style_title_bar(hwnd, theme::BAR.bgr(), theme::TEXT.bgr());
+        // Apply the custom frame (WM_NCCALCSIZE) now, before the window first shows.
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         DragAcceptFiles(hwnd, true);
 
         let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
