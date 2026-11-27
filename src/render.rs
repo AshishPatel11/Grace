@@ -723,17 +723,54 @@ impl App {
         let g = &self.gfx;
         let (mx, my) = self.ui.mouse;
         let s = g.scale;
+        let (w, _) = self.client();
+        let bar_bottom = self.bar_h();
+        // A tab just closed: the others slide into place (and keep drawing until done).
+        let slide = self.ui.tab_slide.as_ref().map(|sl| (sl.progress(), sl.gone));
+        if slide.is_some_and(|(p, _)| p < 1.0) {
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(self.hwnd), crate::app::TIMER_ANIM, 15, None);
+            }
+        }
+        // The closed tab fades out where it was.
+        if let Some((p, gone)) = slide.filter(|(p, _)| *p < 1.0) {
+            let r = Rect::new(gone.x, gone.y, gone.w * (1.0 - p), gone.h - 4.0 * s);
+            if r.w > 2.0 {
+                g.round(r, 8.0 * s, TAB_HOVER, 1.0 - p);
+            }
+        }
+        // A thin line along the bottom of the strip; the active tab opens into the page.
+        let act = self.tab_draw_rect(self.active);
+        match act {
+            Some(a) => {
+                g.fill(Rect::new(0.0, bar_bottom - 1.0, a.x.max(0.0), 1.0), TAB_EDGE);
+                g.fill(Rect::new(a.right(), bar_bottom - 1.0, (w - a.right()).max(0.0), 1.0), TAB_EDGE);
+            }
+            None => g.fill(Rect::new(0.0, bar_bottom - 1.0, w, 1.0), TAB_EDGE),
+        }
+        let closing = match self.ui.drag {
+            Drag::TabClose { tab, .. } => Some(tab),
+            _ => None,
+        };
         for (i, hit) in self.ui.tabs.iter().enumerate() {
+            let dx = self.tab_dx(i);
+            let shift = |r: Rect| Rect::new(r.x + dx, r.y, r.w, r.h);
+            let hit = crate::app::TabHit { rect: shift(hit.rect), close: shift(hit.close), badge: shift(hit.badge) };
             let r = hit.rect;
             let active = i == self.active;
-            let hover = r.contains(mx, my);
+            let hover = r.contains(mx, my) && my < bar_bottom;
             if active {
+                // The page colour, a lighter edge on top and sides, and an accent line on top.
                 g.round(r, 8.0 * s, BG, 1.0);
                 g.fill(Rect::new(r.x, r.y + r.h / 2.0, r.w, r.h / 2.0 + 1.0), BG);
+                g.clip(Rect::new(r.x - 1.0, r.y - 1.0, r.w + 2.0, r.h));
+                g.outline(Rect::new(r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h + 12.0 * s), 8.0 * s, TAB_EDGE, 1.0);
+                g.unclip();
+                g.round(Rect::new(r.x + 10.0 * s, r.y + 1.0, r.w - 20.0 * s, (2.5 * s).max(2.0)), 1.5 * s, ACCENT, 1.0);
             } else if hover {
-                g.round(Rect::new(r.x, r.y, r.w, r.h - 4.0 * s), 8.0 * s, TAB_HOVER, 1.0);
+                g.round(Rect::new(r.x + 2.0 * s, r.y + 3.0 * s, r.w - 4.0 * s, r.h - 8.0 * s), 7.0 * s, TAB_HOVER, 1.0);
             } else if i + 1 != self.active && i + 1 < self.tabs.len() {
-                g.fill(Rect::new(r.right(), r.y + 9.0 * s, 1.0, r.h - 22.0 * s), BORDER);
+                g.fill(Rect::new(r.right() + 1.0 * s, r.y + 10.0 * s, 1.0, r.h - 24.0 * s), BORDER);
             }
 
             // Status dot.
@@ -800,13 +837,15 @@ impl App {
                     continue;
                 }
             }
-            let tc = if active { TEXT } else { TEXT_DIM.mix(TEXT, if hover { 0.5 } else { 0.0 }) };
+            let tc = if active { HEAD_TEXT } else { TEXT_DIM.mix(TEXT, if hover { 0.5 } else { 0.0 }) };
             g.text(&title, if active || alert != Alert::None { &g.ui_bold } else { &g.ui }, title_r, tc);
 
             if active || hover {
                 let c = hit.close;
                 let c = Rect::new(c.x, cy - c.h / 2.0, c.w, c.h);
-                if c.contains(mx, my) {
+                if closing == Some(self.tabs[i].id) {
+                    g.round(c, 4.0 * s, RED, 0.35);
+                } else if c.contains(mx, my) {
                     g.round(c, 4.0 * s, BORDER, 1.0);
                 }
                 let k = 4.0 * s;
@@ -816,8 +855,10 @@ impl App {
             }
         }
 
-        // + and profile arrow.
-        for (r, plus) in [(self.ui.plus, true), (self.ui.menu, false)] {
+        // + and profile arrow (sliding with the tabs).
+        let pdx = self.ui.tab_slide.as_ref().map_or(0.0, |sl| (sl.plus_x - self.ui.plus.x) * (1.0 - sl.progress()));
+        let moved = |r: Rect| Rect::new(r.x + pdx, r.y, r.w, r.h);
+        for (r, plus) in [(moved(self.ui.plus), true), (moved(self.ui.menu), false)] {
             if r.contains(mx, my) {
                 g.round(r, 6.0 * s, TAB_HOVER, 1.0);
             }

@@ -191,6 +191,11 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             with_app(|a| a.voice_watchdog());
             Some(0)
         }
+        WM_TIMER if wp.0 == app::TIMER_ANIM => {
+            let _ = KillTimer(Some(hwnd), app::TIMER_ANIM);
+            with_app(|a| a.invalidate());
+            Some(0)
+        }
         WM_TIMER if wp.0 == app::TIMER_DRAG => {
             with_app(|a| {
                 if !a.drag_tick() {

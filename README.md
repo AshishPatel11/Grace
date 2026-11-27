@@ -143,6 +143,13 @@ about once a second just to show the git branch. Grace only draws when something
   so it costs nothing.
 - **Alerts.** When Claude finishes or needs you in a tab you are not looking at, the taskbar
   flashes and Windows shows a popup. Click the popup to jump to that tab.
+- **Tabs.** The open tab is joined to the page below it, with a light edge and an orange line on
+  top; the others are plain until you point at them.
+  - A tab closes when you **let go** of the button (on its ×, or the middle button anywhere on
+    it), and only if the mouse is still on that tab. Before, a middle click closed a tab on the
+    press and the next tab (which had slid under the mouse) on the release.
+  - For 0.4 s after a tab closes, another close click is ignored, so a quick double click
+    cannot close the next tab too. The other tabs slide into place (0.18 s) instead of jumping.
 - **Saved tabs.** Closing Grace saves your tabs. Next start, they come back **asleep**
   (0 MB) and wait for Enter, so starting Grace never loads 5 big chats at once.
 - **Clickable paths and links.** Moving the mouse over a URL, a file path (`C:\x\report.pdf`,

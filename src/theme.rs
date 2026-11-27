@@ -28,6 +28,8 @@ pub const RULE: Rgb = Rgb::hex(0x3A3F4B);
 /// The link under the mouse: highlight and underline.
 pub const LINK_HOVER: Rgb = Rgb::hex(0x6CB6FF);
 pub const HEAD_TEXT: Rgb = Rgb::hex(0xF4F5F7);
+/// The edge around the active tab and along the bottom of the tab strip.
+pub const TAB_EDGE: Rgb = Rgb::hex(0x2E333D);
 
 const ANSI: [u32; 16] = [
     0x2A2E36, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD7DAE0, //

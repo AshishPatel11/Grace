@@ -74,6 +74,24 @@ pub enum Drag {
     Pending { id: u64, x: f32, y: f32, link: Option<Target> },
     /// The program gets this press, its moves and its release.
     App(u64),
+    /// A press on a tab's × (left button) or anywhere on a tab (middle button): the tab
+    /// closes when the button comes up on the same tab, not on the press.
+    TabClose { tab: u64, middle: bool },
+}
+
+pub struct TabSlide {
+    pub start: Instant,
+    pub old_x: Vec<(u64, f32)>,
+    pub gone: Rect,
+    pub plus_x: f32,
+}
+
+impl TabSlide {
+    /// 0 at the start, 1 when done (eased: fast first, then slow).
+    pub fn progress(&self) -> f32 {
+        let t = (self.start.elapsed().as_secs_f32() * 1000.0 / TAB_SLIDE_MS).min(1.0);
+        1.0 - (1.0 - t).powi(3)
+    }
 }
 
 pub struct Search {
@@ -102,6 +120,11 @@ pub struct Ui {
     pub link_cell: Option<(u64, Point)>,
     /// The menu of a clicked link, when open (linkmenu.rs).
     pub link_menu: Option<crate::linkmenu::LinkMenu>,
+    /// A tab just closed: when, where every tab was drawn before (by tab id), the closed
+    /// tab's place and the + button's old x. The tabs slide from there (paint_bar).
+    pub tab_slide: Option<TabSlide>,
+    /// When the last tab was closed with the mouse (see CLOSE_GUARD_MS).
+    pub closed_at: Option<Instant>,
     pub jump: Vec<(u64, Rect)>,
     pub cards: Vec<(u64, Rect)>,
     pub tracking: bool,
@@ -137,6 +160,13 @@ pub struct Ui {
 
 /// Timer: keep scrolling while a selection drag is past the top or bottom edge.
 pub const TIMER_DRAG: usize = 6;
+/// Frames of the tab slide after a tab closes.
+pub const TIMER_ANIM: usize = 7;
+/// How long the other tabs take to slide into place after a tab closes.
+pub const TAB_SLIDE_MS: f32 = 180.0;
+/// After a tab closes with the mouse, another close click within this time is ignored
+/// (the next tab has just slid under the mouse).
+const CLOSE_GUARD_MS: u128 = 400;
 
 /// In a menu's items: `(SUB_START, "Label")` opens a submenu, `(SUB_END, "")` closes it.
 pub const SUB_START: u32 = u32::MAX;
@@ -615,6 +645,11 @@ impl App {
         for id in leaves {
             self.kill_pane(id);
         }
+        // Where each tab is drawn now (mid-slide included), so the rest can slide from there.
+        let old_x: Vec<(u64, f32)> = (0..self.tabs.len()).filter_map(|i| Some((self.tabs[i].id, self.tab_draw_rect(i)?.x))).collect();
+        let gone = self.tab_draw_rect(idx).unwrap_or_default();
+        let plus_x = self.ui.plus.x + self.ui.tab_slide.as_ref().map_or(0.0, |sl| (sl.plus_x - self.ui.plus.x) * (1.0 - sl.progress()));
+        self.ui.tab_slide = Some(TabSlide { start: Instant::now(), old_x, gone, plus_x });
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
             self.quit_ok = true;
@@ -909,6 +944,23 @@ impl App {
             }
         }
         self.layout_bar();
+    }
+
+    /// Where tab `i` is drawn right now: its place, or on the way there after a close.
+    pub fn tab_draw_rect(&self, i: usize) -> Option<Rect> {
+        let r = self.ui.tabs.get(i)?.rect;
+        Some(Rect::new(r.x + self.tab_dx(i), r.y, r.w, r.h))
+    }
+
+    /// How far tab `i` is still from its place while the tabs slide (0 when not sliding).
+    pub fn tab_dx(&self, i: usize) -> f32 {
+        let Some(sl) = &self.ui.tab_slide else { return 0.0 };
+        let (Some(t), Some(hit)) = (self.tabs.get(i), self.ui.tabs.get(i)) else { return 0.0 };
+        let p = sl.progress();
+        if p >= 1.0 {
+            return 0.0;
+        }
+        sl.old_x.iter().find(|(id, _)| *id == t.id).map_or(0.0, |(_, x)| (x - hit.rect.x) * (1.0 - p))
     }
 
     pub fn layout_bar(&mut self) {
@@ -1223,6 +1275,9 @@ impl App {
                             "mem_mb": self.tab_mem(i) / 1_048_576,
                             "active": i == self.active,
                             "claude_session": session,
+                            // Where the tab and its × are on screen (for click tests).
+                            "rect": self.ui.tabs.get(i).map(|h| [h.rect.x, h.rect.y, h.rect.w, h.rect.h]),
+                            "close": self.ui.tabs.get(i).map(|h| [h.close.cx(), h.close.cy()]),
                         })
                     })
                     .collect();
@@ -1454,10 +1509,12 @@ impl App {
             "mouse" => {
                 let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 let (x, y) = (f("x"), f("y"));
+                // "button": 0 left (default), 1 middle, 2 right.
+                let b = j.get("button").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
                 match j.get("do").and_then(|v| v.as_str()).unwrap_or("") {
-                    "down" => self.on_mouse_down(x, y, 0),
+                    "down" => self.on_mouse_down(x, y, b),
                     "move" => self.on_mouse_move(x, y),
-                    "up" => self.on_mouse_up(x, y, 0),
+                    "up" => self.on_mouse_up(x, y, b),
                     "wheel" => self.on_wheel(x, y, f("delta") as i16),
                     other => return json!({"ok": false, "error": format!("unknown mouse step '{other}'")}),
                 }
@@ -2597,7 +2654,7 @@ impl App {
             match button {
                 0 => {
                     if t.close.contains(x, y) {
-                        self.close_tab(i, true);
+                        self.press_close(i, false);
                         return;
                     }
                     if t.badge.contains(x, y) && self.refresh_hint(i) {
@@ -2622,7 +2679,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                     self.ui.drag = Drag::Tab { idx: i, start_x: x, moved: false };
                     unsafe { SetCapture(self.hwnd) };
                 }
-                1 => self.close_tab(i, true),
+                1 => self.press_close(i, true),
                 _ => {}
             }
             return;
@@ -2633,6 +2690,18 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         } else if self.ui.menu.contains(x, y) || (button == 2 && self.ui.plus.contains(x, y)) {
             self.profile_menu_at_button();
         }
+    }
+
+    /// A press on a tab's × or a middle press on a tab: close it when the button comes up
+    /// (on_mouse_up), unless a tab was just closed (the next one slid under the mouse).
+    fn press_close(&mut self, i: usize, middle: bool) {
+        if self.ui.closed_at.is_some_and(|t| t.elapsed().as_millis() < CLOSE_GUARD_MS) {
+            return;
+        }
+        let Some(t) = self.tabs.get(i) else { return };
+        self.ui.drag = Drag::TabClose { tab: t.id, middle };
+        unsafe { SetCapture(self.hwnd) };
+        self.invalidate();
     }
 
     fn scrollbar_drag(&mut self, id: u64, r: Rect, y: f32) {
@@ -2728,6 +2797,10 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                 }
                 return;
             }
+            Drag::TabClose { .. } => {
+                self.invalidate();
+                return;
+            }
             Drag::None => {}
         }
         // A link's menu is open: only its rows react.
@@ -2803,10 +2876,20 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
             return;
         }
-        if button == 1 && y < self.bar_h() {
-            if let Some(i) = self.ui.tabs.iter().position(|t| t.rect.contains(x, y)) {
-                self.close_tab(i, true);
+        // Let go on the same tab (on its × for the left button): close it.
+        if let Drag::TabClose { tab, middle } = drag {
+            if (button == 1) == middle {
+                let i = self.tabs.iter().position(|t| t.id == tab);
+                let still_on = i.and_then(|i| self.ui.tabs.get(i)).is_some_and(|h| if middle { h.rect.contains(x, y) } else { h.close.inset(-self.s(2.0)).contains(x, y) });
+                if let (Some(i), true) = (i, still_on) {
+                    self.ui.closed_at = Some(Instant::now());
+                    self.close_tab(i, true);
+                }
             }
+            self.invalidate();
+            return;
+        }
+        if button == 1 {
             return;
         }
         match drag {
