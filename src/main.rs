@@ -525,7 +525,7 @@ fn main() {
 
         let saved = App::saved_window();
         let (x, y, w, h) = match saved {
-            Some(s) if s.w > 200 && s.h > 150 => (s.x, s.y, s.w, s.h),
+            Some(s) if s.w > 200 && s.h > 150 && win::on_screen(s.x, s.y, s.w, s.h) => (s.x, s.y, s.w, s.h),
             _ => (CW_USEDEFAULT, CW_USEDEFAULT, 1200, 780),
         };
         let Ok(hwnd) = CreateWindowExW(

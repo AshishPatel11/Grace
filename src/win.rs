@@ -1,9 +1,9 @@
 //! Small Win32 helpers: clipboard, tray popups, taskbar flash, icons, dialogs.
 
 use windows::core::{w, HSTRING, PCSTR, PCWSTR};
-use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
-use windows::Win32::Graphics::Gdi::CreateBitmap;
+use windows::Win32::Graphics::Gdi::{CreateBitmap, GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONULL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
@@ -200,6 +200,27 @@ pub fn tray_remove(hwnd: HWND) {
     };
     unsafe {
         let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+    }
+}
+
+/// True if a window at this spot can be seen and grabbed: it touches a connected
+/// screen, and enough of its title bar is on that screen to drag it. A saved spot
+/// on a second monitor that is now unplugged fails this, so the window does not
+/// open somewhere nobody can see it.
+pub fn on_screen(x: i32, y: i32, w: i32, h: i32) -> bool {
+    let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+    unsafe {
+        let mon = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+        if mon.is_invalid() {
+            return false;
+        }
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(mon, &mut mi).as_bool() {
+            return false;
+        }
+        let work = mi.rcWork;
+        let title_w = r.right.min(work.right) - r.left.max(work.left);
+        title_w >= 100 && r.top >= work.top - 8 && r.top <= work.bottom - 40
     }
 }
 
