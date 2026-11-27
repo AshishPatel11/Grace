@@ -147,9 +147,11 @@ about once a second just to show the git branch. Grace only draws when something
   (0 MB) and wait for Enter, so starting Grace never loads 5 big chats at once.
 - **Clickable paths and links.** Moving the mouse over a URL, a file path (`C:\x\report.pdf`,
   `src\app.rs:42`) or a link in Claude's chat gives it a soft blue highlight and underline.
-  - **Click** shows a small menu: Open, Copy link / Copy path, and for files Show in File
-    Explorer (and "Open in VS Code" / "Open with <app>" when both make sense). Dragging from a
-    link still selects text.
+  - **Click** opens Grace's own dropdown at the mouse: the link on top (icon, name, folder or
+    full address), then Open, Copy link / Copy path, and for files Show in File Explorer (and
+    "Open in VS Code" / "Open with <app>" when both make sense), each with an icon. Mouse or
+    ↑↓ + Enter; Esc, a click outside or the wheel closes it. Dragging from a link still selects
+    text. (`src/linkmenu.rs`)
   - **Ctrl+click** opens it straight away.
   - Each kind of file opens in its own app: PDF, video, pictures, Office files in the app
     Windows uses for them; folders in File Explorer; code and text files (and any path with a

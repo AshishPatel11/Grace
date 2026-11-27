@@ -11,6 +11,7 @@ mod selmem;
 mod compose;
 mod composebox;
 mod config;
+mod linkmenu;
 mod diffview;
 mod finder;
 mod folders;

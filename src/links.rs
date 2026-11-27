@@ -126,7 +126,7 @@ pub enum OpenWith {
 
 /// Files that are code or plain text. These open in the editor even when Windows has an
 /// app for them (Windows thinks ".ts" is a video, for example).
-fn is_code(path: &str) -> bool {
+pub fn is_code(path: &str) -> bool {
     const CODE: &[&str] = &[
         "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "kts", "c", "h", "cc", "cpp", "hpp", "cs", "rb",
         "php", "swift", "dart", "lua", "sh", "bash", "ps1", "psm1", "bat", "cmd", "sql", "json", "jsonc", "jsonl", "toml", "yaml",

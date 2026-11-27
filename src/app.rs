@@ -100,8 +100,8 @@ pub struct Ui {
     pub link_text: String,
     /// The text cell the link above was looked up for (looked up again only when it changes).
     pub link_cell: Option<(u64, Point)>,
-    /// The link whose menu is open (Open / Copy / Show in File Explorer).
-    pub link_menu: Option<Target>,
+    /// The menu of a clicked link, when open (linkmenu.rs).
+    pub link_menu: Option<crate::linkmenu::LinkMenu>,
     pub jump: Vec<(u64, Rect)>,
     pub cards: Vec<(u64, Rect)>,
     pub tracking: bool,
@@ -160,8 +160,6 @@ pub enum MenuCtx {
     Profiles,
     /// The folder button under a Claude pane.
     Folder(u64),
-    /// A clicked link (the link is in `ui.link_menu`).
-    Link,
 }
 
 pub enum Confirmed {
@@ -1391,17 +1389,20 @@ impl App {
                 let hover = self.ui.link.as_ref().map(|(_, l)| format!("{:?} {:?}-{:?}", l.target, l.start, l.end));
                 self.on_mouse_down(x, y, 0);
                 self.on_mouse_up(x, y, 0);
-                let Some(pos) = self.pending.iter().rposition(|d| matches!(d, Deferred::Menu { ctx: MenuCtx::Link, .. })) else {
+                let Some(m) = self.ui.link_menu.as_ref() else {
                     return json!({"ok": false, "hover": hover, "error": "no link menu"});
                 };
-                let Deferred::Menu { items, ctx, .. } = self.pending.remove(pos) else { unreachable!() };
-                let labels: Vec<String> = items.iter().filter(|i| i.0 != 0).map(|i| i.1.clone()).collect();
+                let labels: Vec<String> = m.items.iter().filter(|i| i.cmd != 0).map(|i| format!("{} [{}]", i.label, i.hint)).collect();
                 let want = j.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                let pick = items.iter().find(|(c, l)| !want.is_empty() && *c != 0 && l.contains(want)).map(|x| x.0);
-                match pick {
-                    Some(cmd) => self.menu_command(ctx, cmd),
-                    None => self.ui.link_menu = None,
+                let pick = m.items.iter().position(|i| !want.is_empty() && i.cmd != 0 && i.label.contains(want));
+                let cmd_picked = pick.map(|i| m.items[i].cmd);
+                if let Some(cmd) = cmd_picked {
+                    self.link_command(cmd);
+                    self.ui.link_menu = None;
+                } else if j.get("keep").and_then(|v| v.as_bool()) != Some(true) {
+                    self.ui.link_menu = None;
                 }
+                let pick = cmd_picked;
                 json!({"ok": true, "hover": hover, "items": labels, "picked": pick, "toast": self.toast.as_ref().map(|t| t.0.clone())})
             }
             // The diff viewer (tests): {"cmd":"diff","tab":2} opens it; then "key" moves in it.
@@ -1677,7 +1678,10 @@ impl App {
         if vk == VK_ESCAPE && self.stop_voice() {
             return true;
         }
-        // The "find an old chat" box and the diff viewer take the keys while open.
+        // A link's menu, the "find an old chat" box and the diff viewer take the keys while open.
+        if self.ui.link_menu.is_some() && self.link_menu_key(vk) {
+            return true;
+        }
         if self.ui.finder.is_some() {
             return self.finder_key(vk, ctrl);
         }
@@ -2108,6 +2112,9 @@ impl App {
         // The test copy never has the keyboard; draw it as if it had, so screenshots show the caret.
         self.focused = on || crate::dev();
         self.blink_reset();
+        if !on && !crate::dev() {
+            self.ui.link_menu = None;
+        }
         if !on {
             // Right Alt held for talking, then Alt+Tab away: we will never see it come up.
             if self.voice.as_ref().is_some_and(|v| v.hold.is_some()) {
@@ -2152,7 +2159,6 @@ impl App {
         }
         match ctx {
             MenuCtx::Folder(id) => self.folder_command(id, cmd),
-            MenuCtx::Link => self.link_command(cmd),
             MenuCtx::Profiles => {
                 if cmd == 101 {
                     self.pick_folder_for_claude();
@@ -2417,6 +2423,9 @@ impl App {
         self.ui.mouse = (x, y);
         // A picture opened big: a click anywhere closes it.
         if self.close_modal() {
+            return;
+        }
+        if self.link_menu_mouse_down(x, y) {
             return;
         }
         if self.ui.finder.is_some() {
@@ -2721,6 +2730,11 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
             Drag::None => {}
         }
+        // A link's menu is open: only its rows react.
+        if self.link_menu_hover(x, y) {
+            self.invalidate();
+            return;
+        }
         // Hover: picture previews, links, tabs.
         self.ui.preview = self.preview_at(x, y);
         self.hover_link(x, y);
@@ -2798,8 +2812,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         match drag {
             Drag::Pending { link: Some(target), .. } => {
                 // A click on a link: its menu, where the mouse is.
-                let (sx, sy) = self.to_screen(x, y);
-                self.link_menu(target, sx, sy);
+                self.link_menu(target, x, y);
                 self.invalidate();
                 return;
             }
@@ -2931,6 +2944,10 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
     }
 
     pub fn on_wheel(&mut self, x: f32, y: f32, delta: i16) {
+        if self.ui.link_menu.take().is_some() {
+            self.invalidate();
+            return;
+        }
         if self.finder_wheel(delta) || self.diff_wheel(delta) {
             return;
         }
@@ -2999,47 +3016,49 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
     }
 
     /// The menu for a clicked link: open, copy, and for files "Show in File Explorer".
-    pub fn link_menu(&mut self, target: Target, x: i32, y: i32) {
-        let mut items: Vec<(u32, String)> = Vec::new();
+    /// (x, y): where the click was, in window pixels.
+    pub fn link_menu(&mut self, target: Target, x: f32, y: f32) {
+        use crate::linkmenu::{Item, I_CODE, I_COPY, I_EXPLORER, I_FOLDER, I_OPEN};
+        let mut items: Vec<Item> = Vec::new();
         match &target {
             Target::Url(u) => {
                 let local = u.starts_with("http://localhost") || u.starts_with("http://127.0.0.1");
                 let app = win::default_app("http").map(|a| format!("Open in {a}")).unwrap_or_else(|| "Open in browser".into());
-                items.push((1, format!("{app}\tCtrl+Click")));
-                items.push((0, String::new()));
-                items.push((3, if local { "Copy address".into() } else { "Copy link".into() }));
+                items.push(Item::new(1, I_OPEN, app).hint("Ctrl+Click"));
+                items.push(Item::new(3, I_COPY, if local { "Copy address" } else { "Copy link" }));
             }
             Target::File { path, line, .. } => {
                 let has_editor = !self.cfg.editor.trim().is_empty();
                 let is_dir = std::path::Path::new(path).is_dir();
                 let app = links::ext_of(path).and_then(|e| win::default_app(&e));
+                let editor = format!("Open in {}", self.editor_name());
                 match self.file_open_with(path, *line) {
-                    links::OpenWith::Explorer => items.push((1, "Open folder\tCtrl+Click".into())),
+                    links::OpenWith::Explorer => items.push(Item::new(1, I_FOLDER, "Open folder").hint("Ctrl+Click")),
                     links::OpenWith::Editor if has_editor => {
-                        items.push((2, format!("Open in {}\tCtrl+Click", self.editor_name())));
+                        items.push(Item::new(2, I_CODE, editor).hint("Ctrl+Click"));
                         if let Some(a) = app {
-                            items.push((1, format!("Open with {a}")));
+                            items.push(Item::new(1, I_OPEN, format!("Open with {a}")));
                         }
                     }
-                    links::OpenWith::Editor => items.push((1, "Open\tCtrl+Click".into())),
+                    links::OpenWith::Editor => items.push(Item::new(1, I_OPEN, "Open").hint("Ctrl+Click")),
                     links::OpenWith::DefaultApp => {
-                        items.push((1, format!("Open with {}\tCtrl+Click", app.unwrap_or_else(|| "its app".into()))));
+                        let label = format!("Open with {}", app.unwrap_or_else(|| "its app".into()));
+                        items.push(Item::new(1, I_OPEN, label).hint("Ctrl+Click"));
                         if has_editor && !is_dir {
-                            items.push((2, format!("Open in {}", self.editor_name())));
+                            items.push(Item::new(2, I_CODE, editor));
                         }
                     }
                 }
-                items.push((0, String::new()));
-                items.push((3, "Copy path".into()));
-                items.push((4, "Show in File Explorer".into()));
+                items.push(Item::line());
+                items.push(Item::new(3, I_COPY, "Copy path"));
+                items.push(Item::new(4, I_EXPLORER, "Show in File Explorer"));
             }
         }
-        self.ui.link_menu = Some(target);
-        self.pending.push(Deferred::Menu { items, x, y, ctx: MenuCtx::Link });
+        self.open_link_menu(target, items, x, y);
     }
 
-    fn link_command(&mut self, cmd: u32) {
-        let Some(t) = self.ui.link_menu.take() else { return };
+    pub fn link_command(&mut self, cmd: u32) {
+        let Some(t) = self.ui.link_menu.as_ref().map(|m| m.target.clone()) else { return };
         match (cmd, &t) {
             (1, Target::File { path, .. }) => win::shell_open(path),
             (1, _) => self.open_link(&t),
@@ -3069,6 +3088,9 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
 
     pub fn cursor_for(&self, x: f32, y: f32) -> u16 {
         // 0 arrow, 1 ibeam, 2 hand, 3 size-we, 4 size-ns
+        if let Some(c) = self.link_menu_cursor(x, y) {
+            return c;
+        }
         if y < self.bar_h() {
             return 0;
         }

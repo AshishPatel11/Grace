@@ -312,6 +312,7 @@ impl App {
         self.paint_preview();
         self.paint_diff();
         self.paint_finder();
+        self.paint_link_menu();
         self.paint_toast();
         self.paint_modal();
         self.schedule_blink();

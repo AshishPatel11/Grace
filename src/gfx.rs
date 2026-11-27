@@ -61,6 +61,8 @@ pub struct Gfx {
     pub heads: Vec<IDWriteTextFormat>,
     /// The typing box: terminal font, wraps long lines.
     pub boxf: IDWriteTextFormat,
+    /// Windows' icon font (Segoe Fluent Icons, or Segoe MDL2 Assets on Windows 10), centred.
+    pub icons: IDWriteTextFormat,
     face: IDWriteFontFace,
     pub cell_w: f32,
     pub cell_h: f32,
@@ -120,7 +122,8 @@ impl Gfx {
                 ui_center: dummy.clone(),
                 ui_small_center: dummy.clone(),
                 heads: vec![dummy.clone(), dummy.clone()],
-                boxf: dummy,
+                boxf: dummy.clone(),
+                icons: dummy,
                 face,
                 cell_w: 8.0,
                 cell_h: 16.0,
@@ -219,6 +222,8 @@ impl Gfx {
             self.ui_small = self.ui_format(10.5 * self.scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?;
             self.ui_center = self.ui_format(ui_px, DWRITE_FONT_WEIGHT_NORMAL, true)?;
             self.ui_small_center = self.ui_format(10.5 * self.scale, DWRITE_FONT_WEIGHT_SEMI_BOLD, true)?;
+            let icon_font = if self.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" };
+            self.icons = self.ui_format_in(icon_font, 14.0 * self.scale, DWRITE_FONT_WEIGHT_NORMAL, true)?;
             self.heads = vec![
                 self.ui_format(px * 1.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,
                 self.ui_format(px * 1.22, DWRITE_FONT_WEIGHT_SEMI_BOLD, false)?,
@@ -227,10 +232,20 @@ impl Gfx {
         }
     }
 
+    fn has_family(&self, name: &str) -> bool {
+        let mut idx = 0u32;
+        let mut exists = windows::core::BOOL(0);
+        unsafe { self.coll.FindFamilyName(&HSTRING::from(name), &mut idx, &mut exists) }.is_ok() && exists.as_bool()
+    }
+
     fn ui_format(&self, px: f32, weight: DWRITE_FONT_WEIGHT, center: bool) -> Result<IDWriteTextFormat> {
+        self.ui_format_in("Segoe UI", px, weight, center)
+    }
+
+    fn ui_format_in(&self, family: &str, px: f32, weight: DWRITE_FONT_WEIGHT, center: bool) -> Result<IDWriteTextFormat> {
         unsafe {
             let f = self.dw.CreateTextFormat(
-                w!("Segoe UI"),
+                &HSTRING::from(family),
                 &self.coll,
                 weight,
                 DWRITE_FONT_STYLE_NORMAL,
