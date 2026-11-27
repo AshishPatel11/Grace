@@ -111,7 +111,7 @@ about once a second just to show the git branch. Grace only draws when something
     on the left: green = done, red = failed, grey = running. Claude's answer stays bright.
   - **Markdown:** headings are drawn bigger, `---` is a real line, `- ` lists get `•` bullets,
     and `inline code` gets a soft background.
-  - Links are real links (Ctrl+click) and `~~old~~` is struck through. Claude Code only does
+  - Links are real links (click for a menu, Ctrl+click opens) and `~~old~~` is struck through. Claude Code only does
     these for terminals it knows by name, so Grace tells it they work (`FORCE_HYPERLINK=1`,
     `CLAUDE_CODE_FORCE_STRIKETHROUGH=1`). New tabs get this; Refresh chat for open ones.
 - **Select text with a normal drag**, even inside Claude's full-screen view. A click without
@@ -145,8 +145,16 @@ about once a second just to show the git branch. Grace only draws when something
   flashes and Windows shows a popup. Click the popup to jump to that tab.
 - **Saved tabs.** Closing Grace saves your tabs. Next start, they come back **asleep**
   (0 MB) and wait for Enter, so starting Grace never loads 5 big chats at once.
-- **Clickable paths and links.** Hold Ctrl and click a path like `C:\x\app.rs:42` or a URL.
-  Files open in VS Code at that line (setting `editor`).
+- **Clickable paths and links.** Moving the mouse over a URL, a file path (`C:\x\report.pdf`,
+  `src\app.rs:42`) or a link in Claude's chat gives it a soft blue highlight and underline.
+  - **Click** shows a small menu: Open, Copy link / Copy path, and for files Show in File
+    Explorer (and "Open in VS Code" / "Open with <app>" when both make sense). Dragging from a
+    link still selects text.
+  - **Ctrl+click** opens it straight away.
+  - Each kind of file opens in its own app: PDF, video, pictures, Office files in the app
+    Windows uses for them; folders in File Explorer; code and text files (and any path with a
+    `:line`) in VS Code at that line (setting `editor`). Code files never go to Windows' app
+    for them, because Windows thinks `.ts` is a video.
 - **Kill on close.** Closing a tab or pane stops everything started in it (Claude, node, servers).
   Nothing is left running in the background.
 - **Paste.** Ctrl+V pastes text. If the clipboard holds only a picture, Ctrl+V sends Alt+V, so
@@ -255,6 +263,7 @@ its own pipe (`\\.\pipe\grace-dev-<username>`) and its own settings folder
 Extra pipe commands for tests: `{"cmd":"type","text":"..."}`, `{"cmd":"key","vk":13,"shift":true}`,
 `{"cmd":"box"}` (box text, caret, selection), `{"cmd":"boxhit","x":..,"y":..}`.
 `{"cmd":"finder","query":"webhook"}` searches old chats, `{"cmd":"finder","pick":0}` opens one;
+`{"cmd":"link","x":..,"y":..,"label":"Copy"}` clicks a link and picks from its menu (test copy);
 `{"cmd":"diff","tab":2}` opens the diff viewer; `{"cmd":"menu_pick","menu":"pane","label":"..."}`
 picks a right-click menu line; `{"cmd":"mouse","do":"down","x":..,"y":..}` (down/move/up/wheel).
 `{"cmd":"dump","styles":true}` also gives each row's colours and what the chat look found

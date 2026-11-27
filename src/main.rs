@@ -220,13 +220,6 @@ unsafe fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<isize> 
             Some(0)
         }
         WM_SYSKEYUP if wp.0 as u16 == input::VK_MENU || wp.0 as u16 == input::VK_F10 => Some(0),
-        WM_KEYUP if wp.0 as u16 == input::VK_CONTROL => {
-            with_app(|a| {
-                a.ui.link = None;
-                a.invalidate()
-            });
-            None
-        }
         WM_SETFOCUS => {
             with_app(|a| {
                 a.on_focus(true);

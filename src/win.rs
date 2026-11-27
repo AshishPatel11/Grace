@@ -291,6 +291,35 @@ pub fn make_icon(size: i32) -> HICON {
     }
 }
 
+/// The name of the app Windows opens `assoc` with: an extension (".pdf" -> "Microsoft Edge")
+/// or a link type ("http" -> the browser). None when no app is set for it.
+pub fn default_app(assoc: &str) -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_INIT_IGNOREUNKNOWN, ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME};
+    let mut buf = [0u16; 260];
+    let mut n = buf.len() as u32;
+    let ok = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE,
+            ASSOCSTR_FRIENDLYAPPNAME,
+            &HSTRING::from(assoc),
+            PCWSTR::null(),
+            Some(PWSTR(buf.as_mut_ptr())),
+            &mut n,
+        )
+    }
+    .is_ok();
+    let name = String::from_utf16_lossy(&buf[..(n as usize).saturating_sub(1).min(buf.len())]);
+    (ok && !name.trim().is_empty()).then(|| name.trim().to_string())
+}
+
+/// Open File Explorer at the folder of `path`, with `path` selected.
+pub fn show_in_explorer(path: &str) {
+    use std::os::windows::process::CommandExt;
+    // Explorer wants the quotes around the path only, after "/select,".
+    let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", path.trim_end_matches('\\'))).spawn();
+}
+
 /// Open a file in the editor at a line. `editor` = "code" uses VS Code's `-g`.
 pub fn open_in_editor(editor: &str, path: &str, line: Option<u32>, col: Option<u32>) {
     use std::os::windows::process::CommandExt;

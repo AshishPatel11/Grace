@@ -70,7 +70,8 @@ pub enum Drag {
     Compose(u64),
     /// Button down in a program that uses the mouse (Claude): a drag will select text
     /// here, a plain click goes to the program when the button comes up.
-    Pending { id: u64, x: f32, y: f32 },
+    /// `link`: the press was on a link; letting go without moving shows its menu.
+    Pending { id: u64, x: f32, y: f32, link: Option<Target> },
     /// The program gets this press, its moves and its release.
     App(u64),
 }
@@ -94,7 +95,13 @@ pub struct Ui {
     pub rename: Option<(usize, String)>,
     pub search: Option<Search>,
     pub clicks: (u32, f32, f32, u32),
+    /// The link under the mouse (drawn highlighted), and the text it covered then.
     pub link: Option<(u64, Link)>,
+    pub link_text: String,
+    /// The text cell the link above was looked up for (looked up again only when it changes).
+    pub link_cell: Option<(u64, Point)>,
+    /// The link whose menu is open (Open / Copy / Show in File Explorer).
+    pub link_menu: Option<Target>,
     pub jump: Vec<(u64, Rect)>,
     pub cards: Vec<(u64, Rect)>,
     pub tracking: bool,
@@ -153,6 +160,8 @@ pub enum MenuCtx {
     Profiles,
     /// The folder button under a Claude pane.
     Folder(u64),
+    /// A clicked link (the link is in `ui.link_menu`).
+    Link,
 }
 
 pub enum Confirmed {
@@ -1373,6 +1382,28 @@ impl App {
                 }
                 json!({"ok": true, "picked": pick, "items": labels, "toast": self.toast.as_ref().map(|t| t.0.clone())})
             }
+            // A link (tests): {"cmd":"link","x":..,"y":..,"label":"Copy"} clicks at (x, y), returns
+            // the link's menu lines and picks the one containing "label".
+            "link" if crate::dev() => {
+                let f = |k: &str| j.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let (x, y) = (f("x"), f("y"));
+                self.on_mouse_move(x, y);
+                let hover = self.ui.link.as_ref().map(|(_, l)| format!("{:?} {:?}-{:?}", l.target, l.start, l.end));
+                self.on_mouse_down(x, y, 0);
+                self.on_mouse_up(x, y, 0);
+                let Some(pos) = self.pending.iter().rposition(|d| matches!(d, Deferred::Menu { ctx: MenuCtx::Link, .. })) else {
+                    return json!({"ok": false, "hover": hover, "error": "no link menu"});
+                };
+                let Deferred::Menu { items, ctx, .. } = self.pending.remove(pos) else { unreachable!() };
+                let labels: Vec<String> = items.iter().filter(|i| i.0 != 0).map(|i| i.1.clone()).collect();
+                let want = j.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let pick = items.iter().find(|(c, l)| !want.is_empty() && *c != 0 && l.contains(want)).map(|x| x.0);
+                match pick {
+                    Some(cmd) => self.menu_command(ctx, cmd),
+                    None => self.ui.link_menu = None,
+                }
+                json!({"ok": true, "hover": hover, "items": labels, "picked": pick, "toast": self.toast.as_ref().map(|t| t.0.clone())})
+            }
             // The diff viewer (tests): {"cmd":"diff","tab":2} opens it; then "key" moves in it.
             // Returns the files and the first lines shown.
             "diff" => {
@@ -1543,7 +1574,7 @@ impl App {
                             let cell = &row[Column(c)];
                             let fg = crate::theme::resolve(cell.fg, t.colors());
                             let bg = crate::theme::resolve(cell.bg, t.colors());
-                            let key = (format!("{:02x}{:02x}{:02x}", fg.0, fg.1, fg.2), format!("{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2), format!("{:?}", cell.flags));
+                            let key = (format!("{:02x}{:02x}{:02x}", fg.0, fg.1, fg.2), format!("{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2), format!("{:?}{}", cell.flags, if cell.hyperlink().is_some() { " LINK" } else { "" }));
                             match &mut cur {
                                 Some(x) if (&x.2, &x.3, &x.4) == (&key.0, &key.1, &key.2) => x.1.push(cell.c),
                                 _ => {
@@ -2121,6 +2152,7 @@ impl App {
         }
         match ctx {
             MenuCtx::Folder(id) => self.folder_command(id, cmd),
+            MenuCtx::Link => self.link_command(cmd),
             MenuCtx::Profiles => {
                 if cmd == 101 {
                     self.pick_folder_for_claude();
@@ -2471,6 +2503,26 @@ impl App {
         if button != 0 {
             return;
         }
+        // A link: Ctrl+click opens it; a click (letting go without moving) shows its menu,
+        // a drag still selects text.
+        if count == 1 && !key(VK_SHIFT) && x <= r.right() - self.s(12.0) {
+            if let Some(link) = self.grid_point(id, r, x, y).and_then(|(pt, _)| self.link_at(id, pt)) {
+                if key(VK_CONTROL) {
+                    self.open_link(&link.target);
+                    return;
+                }
+                if let Some(p) = self.panes.get(&id) {
+                    if let Some(l) = p.live.as_ref() {
+                        l.term.lock().selection = None;
+                    }
+                    p.selmem.forget();
+                }
+                self.ui.drag = Drag::Pending { id, x, y, link: Some(link.target) };
+                unsafe { SetCapture(self.hwnd) };
+                self.invalidate();
+                return;
+            }
+        }
         // Claude (fullscreen) uses the mouse itself. Shift always selects here.
         let app_mouse = self.mouse_mode(id) && !key(VK_SHIFT);
         if app_mouse && !self.cfg.mouse_select {
@@ -2489,14 +2541,6 @@ impl App {
                 return;
             }
         }
-        if key(VK_CONTROL) {
-            if let Some((lid, link)) = self.ui.link.clone() {
-                if lid == id {
-                    self.open_link(&link.target);
-                    return;
-                }
-            }
-        }
         if app_mouse && count == 1 {
             // Wait and see: moving the mouse turns this into a text selection; letting go
             // without moving sends Claude a normal click. Double/triple-click select here.
@@ -2506,7 +2550,7 @@ impl App {
                 }
                 p.selmem.forget();
             }
-            self.ui.drag = Drag::Pending { id, x, y };
+            self.ui.drag = Drag::Pending { id, x, y, link: None };
             unsafe { SetCapture(self.hwnd) };
             self.invalidate();
             return;
@@ -2638,7 +2682,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                 self.box_drag(id, x, y);
                 return;
             }
-            Drag::Pending { id, x: x0, y: y0 } => {
+            Drag::Pending { id, x: x0, y: y0, .. } => {
                 let far = self.s(4.0).max(self.gfx.cell_w * 0.5);
                 if (x - x0).abs() < far && (y - y0).abs() < far {
                     return;
@@ -2677,25 +2721,54 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             }
             Drag::None => {}
         }
-        // Hover: picture previews, links (with Ctrl held), tabs.
+        // Hover: picture previews, links, tabs.
         self.ui.preview = self.preview_at(x, y);
-        let old = self.ui.link.take();
-        if key(VK_CONTROL) {
-            if let Some((id, r)) = self.pane_at(x, y) {
-                if let Some((pt, _)) = self.grid_point(id, r, x, y) {
-                    let cwd = self.panes[&id].cwd.clone();
-                    if let Some(l) = self.panes[&id].live.as_ref() {
-                        let t = l.term.lock();
-                        if let Some(link) = links::find_at(&*t, pt, cwd.as_deref()) {
-                            self.ui.link = Some((id, link));
-                        }
-                    }
-                }
+        self.hover_link(x, y);
+        self.invalidate();
+    }
+
+    /// The text cell under (x, y) in a pane, when nothing else is on top of it.
+    fn text_cell_at(&self, x: f32, y: f32) -> Option<(u64, Point)> {
+        if self.ui.finder.is_some() || self.ui.diff.is_some() || self.ui.modal.is_some() {
+            return None;
+        }
+        if self.box_at(x, y).is_some() || self.toolbar_at(x, y).is_some() || self.thumb_at(x, y).is_some() {
+            return None;
+        }
+        if self.ui.code_buttons.iter().any(|b| b.rect.contains(x, y)) {
+            return None;
+        }
+        let (id, r) = self.pane_at(x, y)?;
+        if x > r.right() - self.s(12.0) {
+            return None;
+        }
+        self.grid_point(id, r, x, y).map(|(pt, _)| (id, pt))
+    }
+
+    /// Look up the link under the mouse (only when the mouse moved to another cell).
+    fn hover_link(&mut self, x: f32, y: f32) {
+        let at = self.text_cell_at(x, y);
+        if at == self.ui.link_cell {
+            return;
+        }
+        self.ui.link_cell = at;
+        self.ui.link = None;
+        let Some((id, pt)) = at else { return };
+        if let Some(link) = self.link_at(id, pt) {
+            if let Some(l) = self.panes.get(&id).and_then(|p| p.live.as_ref()) {
+                self.ui.link_text = links::text_of(&*l.term.lock(), &link);
             }
+            self.ui.link = Some((id, link));
         }
-        if old != self.ui.link || y < self.bar_h() + self.s(4.0) || true {
-            self.invalidate();
-        }
+    }
+
+    /// The link at a text cell of pane `id`. Short paths are looked for in Claude's folder.
+    fn link_at(&self, id: u64, pt: Point) -> Option<Link> {
+        let p = self.panes.get(&id)?;
+        let cwd = p.stats.claude.as_ref().map(|c| c.cwd.clone()).filter(|c| !c.is_empty()).or_else(|| p.cwd.clone());
+        let l = p.live.as_ref()?;
+        let t = l.term.lock();
+        links::find_at(&*t, pt, cwd.as_deref())
     }
 
     pub fn on_mouse_up(&mut self, x: f32, y: f32, button: u8) {
@@ -2723,7 +2796,14 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
             return;
         }
         match drag {
-            Drag::Pending { id, x: x0, y: y0 } => {
+            Drag::Pending { link: Some(target), .. } => {
+                // A click on a link: its menu, where the mouse is.
+                let (sx, sy) = self.to_screen(x, y);
+                self.link_menu(target, sx, sy);
+                self.invalidate();
+                return;
+            }
+            Drag::Pending { id, x: x0, y: y0, link: None } => {
                 // A plain click: Claude gets the press and the release.
                 if let Some((_, r)) = self.ui.panes.iter().find(|(p, _)| *p == id).copied() {
                     self.mouse_report(id, r, x0, y0, 0, true);
@@ -2859,13 +2939,19 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         }
         let Some((id, r)) = self.pane_at(x, y) else { return };
         let Some(p) = self.panes.get_mut(&id) else { return };
-        let Some(l) = &p.live else { return };
+        if p.live.is_none() {
+            return;
+        }
         p.scroll_acc += delta as f32 / 120.0 * 3.0;
         let n = p.scroll_acc.trunc() as i32;
         if n == 0 {
             return;
         }
         p.scroll_acc -= n as f32;
+        self.ui.link = None;
+        self.ui.link_cell = None;
+        let Some(p) = self.panes.get(&id) else { return };
+        let Some(l) = &p.live else { return };
         let mode = *l.term.lock().mode();
         if mode.intersects(TermMode::MOUSE_MODE) {
             let b = if n > 0 { 64 } else { 65 };
@@ -2885,10 +2971,89 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
         self.invalidate();
     }
 
+    /// Ctrl+click, or "Open" in the link's menu.
     fn open_link(&self, t: &Target) {
         match t {
             Target::Url(u) => win::shell_open(u),
-            Target::File { path, line, col } => win::open_in_editor(&self.cfg.editor, path, *line, *col),
+            Target::File { path, line, col } => match self.file_open_with(path, *line) {
+                links::OpenWith::Editor => win::open_in_editor(&self.cfg.editor, path, *line, *col),
+                links::OpenWith::Explorer | links::OpenWith::DefaultApp => win::shell_open(path),
+            },
+        }
+    }
+
+    /// Code opens in the editor, folders in File Explorer, the rest (PDF, video, pictures)
+    /// in the app Windows uses for that kind of file.
+    fn file_open_with(&self, path: &str, line: Option<u32>) -> links::OpenWith {
+        let is_dir = std::path::Path::new(path).is_dir();
+        let has_app = !is_dir && links::ext_of(path).is_some_and(|e| win::default_app(&e).is_some());
+        links::open_with(path, line, is_dir, has_app)
+    }
+
+    fn editor_name(&self) -> String {
+        match self.cfg.editor.trim() {
+            "code" => "VS Code".into(),
+            "cursor" => "Cursor".into(),
+            e => e.to_string(),
+        }
+    }
+
+    /// The menu for a clicked link: open, copy, and for files "Show in File Explorer".
+    pub fn link_menu(&mut self, target: Target, x: i32, y: i32) {
+        let mut items: Vec<(u32, String)> = Vec::new();
+        match &target {
+            Target::Url(u) => {
+                let local = u.starts_with("http://localhost") || u.starts_with("http://127.0.0.1");
+                let app = win::default_app("http").map(|a| format!("Open in {a}")).unwrap_or_else(|| "Open in browser".into());
+                items.push((1, format!("{app}\tCtrl+Click")));
+                items.push((0, String::new()));
+                items.push((3, if local { "Copy address".into() } else { "Copy link".into() }));
+            }
+            Target::File { path, line, .. } => {
+                let has_editor = !self.cfg.editor.trim().is_empty();
+                let is_dir = std::path::Path::new(path).is_dir();
+                let app = links::ext_of(path).and_then(|e| win::default_app(&e));
+                match self.file_open_with(path, *line) {
+                    links::OpenWith::Explorer => items.push((1, "Open folder\tCtrl+Click".into())),
+                    links::OpenWith::Editor if has_editor => {
+                        items.push((2, format!("Open in {}\tCtrl+Click", self.editor_name())));
+                        if let Some(a) = app {
+                            items.push((1, format!("Open with {a}")));
+                        }
+                    }
+                    links::OpenWith::Editor => items.push((1, "Open\tCtrl+Click".into())),
+                    links::OpenWith::DefaultApp => {
+                        items.push((1, format!("Open with {}\tCtrl+Click", app.unwrap_or_else(|| "its app".into()))));
+                        if has_editor && !is_dir {
+                            items.push((2, format!("Open in {}", self.editor_name())));
+                        }
+                    }
+                }
+                items.push((0, String::new()));
+                items.push((3, "Copy path".into()));
+                items.push((4, "Show in File Explorer".into()));
+            }
+        }
+        self.ui.link_menu = Some(target);
+        self.pending.push(Deferred::Menu { items, x, y, ctx: MenuCtx::Link });
+    }
+
+    fn link_command(&mut self, cmd: u32) {
+        let Some(t) = self.ui.link_menu.take() else { return };
+        match (cmd, &t) {
+            (1, Target::File { path, .. }) => win::shell_open(path),
+            (1, _) => self.open_link(&t),
+            (2, Target::File { path, line, col }) => win::open_in_editor(&self.cfg.editor, path, *line, *col),
+            (3, Target::Url(u)) => {
+                win::set_clipboard_text(self.hwnd, u);
+                self.show_toast("Copied the link.".into());
+            }
+            (3, Target::File { path, .. }) => {
+                win::set_clipboard_text(self.hwnd, path);
+                self.show_toast("Copied the path.".into());
+            }
+            (4, Target::File { path, .. }) => win::show_in_explorer(path),
+            _ => {}
         }
     }
 
@@ -2912,7 +3077,7 @@ Claude restarts with the same chat (10-20 seconds) and gives back about {gain} o
                 return if d.vertical { 3 } else { 4 };
             }
         }
-        if self.ui.link.is_some() && key(VK_CONTROL) {
+        if self.ui.link.as_ref().is_some_and(|(id, _)| self.text_cell_at(x, y).is_some_and(|(p, _)| p == *id)) {
             return 2;
         }
         if self.ui.modal.is_some() {

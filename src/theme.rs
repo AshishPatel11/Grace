@@ -25,6 +25,8 @@ pub const CODE_BG: Rgb = Rgb::hex(0x1C1F27);
 pub const CODE_HEAD: Rgb = Rgb::hex(0x242832);
 pub const PILL: Rgb = Rgb::hex(0x2A2F3D);
 pub const RULE: Rgb = Rgb::hex(0x3A3F4B);
+/// The link under the mouse: highlight and underline.
+pub const LINK_HOVER: Rgb = Rgb::hex(0x6CB6FF);
 pub const HEAD_TEXT: Rgb = Rgb::hex(0xF4F5F7);
 
 const ANSI: [u32; 16] = [

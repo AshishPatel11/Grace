@@ -457,7 +457,24 @@ impl App {
             self.perf.1 += t_copy.elapsed().as_micros() as u64;
             Snap { rows, cols, lines, off, hist, cursor, cursor_char, cursor_wide }
         };
-        let link = self.ui.link.as_ref().filter(|(l, _)| *l == id).map(|(_, l)| l.clone());
+        // The link under the mouse, if its text is still where it was (Claude may have
+        // scrolled since the mouse last moved).
+        let link = self.ui.link.as_ref().filter(|(l, _)| *l == id).map(|(_, l)| l.clone()).filter(|l| {
+            let mut s = String::new();
+            for (_, line, cells) in &snap.rows {
+                if *line < l.start.line || *line > l.end.line {
+                    continue;
+                }
+                let c0 = if *line == l.start.line { l.start.column.0 } else { 0 };
+                let c1 = if *line == l.end.line { l.end.column.0 } else { snap.cols.saturating_sub(1) };
+                for c in cells.iter().take(c1 + 1).skip(c0) {
+                    if !c.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                        s.push(c.c);
+                    }
+                }
+            }
+            s == self.ui.link_text
+        });
 
         // Claude's chat drawn like a chat app (see chat.rs): what each row is, code boxes.
         let mut deco = None;
@@ -533,6 +550,19 @@ impl App {
                     }
                 }
             }
+            // The link under the mouse: a soft rounded highlight under the text and a thin
+            // underline, both inside the row (nothing drawn over the rows around it).
+            if let Some(l) = &link {
+                if *line >= l.start.line && *line <= l.end.line {
+                    let c0 = if *line == l.start.line { l.start.column.0 } else { 0 };
+                    let c1 = if *line == l.end.line { l.end.column.0 } else { cols - 1 };
+                    let (x0, w) = (ox + c0 as f32 * cw, (c1 + 1 - c0) as f32 * cw);
+                    let pad = (ch * 0.08).max(1.0);
+                    g.round(Rect::new(x0 - cw * 0.25, y + pad, w + cw * 0.5, ch - 2.0 * pad), ch * 0.22, LINK_HOVER, 0.22);
+                    let uy = (y + g.underline_y).min(y + ch - pad - g.line_th);
+                    g.fill_a(Rect::new(x0, uy, w, g.line_th.max(1.0)), LINK_HOVER, 0.9);
+                }
+            }
             // The cache is keyed by the row's content, so a line that scrolled up
             // one row is reused instead of being shaped again.
             let rc = p.cache.get_or_build(*hash, || {
@@ -548,13 +578,6 @@ impl App {
             }
             for (col, c, color) in &rc.boxes {
                 draw_box(g, *c, ox + *col as f32 * cw, y, cw, ch, *color);
-            }
-            if let Some(l) = &link {
-                if *line >= l.start.line && *line <= l.end.line {
-                    let c0 = if *line == l.start.line { l.start.column.0 } else { 0 };
-                    let c1 = if *line == l.end.line { l.end.column.0 } else { cols - 1 };
-                    g.fill(Rect::new(ox + c0 as f32 * cw, y + g.underline_y, (c1 + 1 - c0) as f32 * cw, g.line_th), BLUE);
-                }
             }
         }
         p.cache.end_frame();
