@@ -263,6 +263,13 @@ pub fn spawn(a: SpawnArgs<'_>) -> std::io::Result<(Live, Arc<Mutex<Option<EventL
     // and ~~old~~ with the tildes. Grace draws both, so turn them on.
     env.insert("FORCE_HYPERLINK".to_string(), "1".to_string());
     env.insert("CLAUDE_CODE_FORCE_STRIKETHROUGH".to_string(), "1".to_string());
+    // Claude Code turns its full-screen mode off for the whole PC after two starts that did
+    // not finish (a tab closed while Claude was still starting counts). Then chats run in
+    // the classic mode, where the input box scrolls away with the chat. When your Claude
+    // settings ask for full-screen, keep it on (Claude's own override for that switch).
+    if std::env::var_os("CLAUDE_CODE_NO_FLICKER").is_none() && claude_wants_fullscreen() {
+        env.insert("CLAUDE_CODE_NO_FLICKER".to_string(), "1".to_string());
+    }
     env.insert("GRACE_PANE".to_string(), a.pane.to_string());
     // The old name, for scripts made before the rename.
     env.insert("PULSETERM_PANE".to_string(), a.pane.to_string());
@@ -409,4 +416,14 @@ impl Pane {
         }
         self.profile.clone()
     }
+}
+
+/// Does `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) say `"tui": "fullscreen"`?
+fn claude_wants_fullscreen() -> bool {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(|h| std::path::Path::new(&h).join(".claude")));
+    let Some(dir) = dir else { return false };
+    let Ok(text) = std::fs::read_to_string(dir.join("settings.json")) else { return false };
+    serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("tui")?.as_str().map(|t| t == "fullscreen")).unwrap_or(false)
 }

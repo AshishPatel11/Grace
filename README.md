@@ -143,6 +143,11 @@ about once a second just to show the git branch. Grace only draws when something
   so it costs nothing.
 - **Alerts.** When Claude finishes or needs you in a tab you are not looking at, the taskbar
   flashes and Windows shows a popup. Click the popup to jump to that tab.
+- **Claude stays full-screen.** Claude Code turns its full-screen mode off for the whole PC
+  after two starts that did not finish (closing a tab while Claude is still starting counts).
+  Chats then run in the classic mode, where the input box and status lines scroll away with the
+  chat. When `~/.claude/settings.json` says `"tui": "fullscreen"`, Grace starts Claude with
+  `CLAUDE_CODE_NO_FLICKER=1` (Claude's own override), so it stays full-screen.
 - **Tabs.** The open tab is joined to the page below it, with a light edge and an orange line on
   top; the others are plain until you point at them.
   - A tab closes when you **let go** of the button (on its ×, or the middle button anywhere on
